@@ -29,10 +29,6 @@ inputs:
     required: false
     description: Git commit SHA to embed via COMMIT_SHA build arg
     default: ''
-  cache-scope:
-    required: false
-    description: GHA cache scope for buildx layer cache (defaults to image-name)
-    default: ${{ inputs.image-name }}
 runs:
   using: "composite"
   steps:
@@ -58,5 +54,5 @@ runs:
           ${{ inputs.registry }}/${{ inputs.image-name }}:${{ inputs.tag }}
           ${{ inputs.load != 'true' && inputs.prerelease != 'true' && format('{0}/{1}:latest', inputs.registry, inputs.image-name) || '' }}
         build-args: ${{ inputs.commit-sha != '' && format('COMMIT_SHA={0}', inputs.commit-sha) || '' }}
-        cache-from: type=gha,scope=${{ inputs.cache-scope }}
-        cache-to: type=gha,mode=max,scope=${{ inputs.cache-scope }}
+        cache-from: type=gha,scope=${{ inputs.image-name }}
+        cache-to: type=gha,mode=max,scope=${{ inputs.image-name }}

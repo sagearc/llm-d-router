@@ -16,7 +16,6 @@ runs:
         tag: dev
         registry: ghcr.io/llm-d
         load: 'true'
-        cache-scope: builder
 
     - name: Build EPP image
       uses: ./.github/actions/docker-build-and-push
@@ -27,7 +26,6 @@ runs:
         registry: ghcr.io/llm-d
         load: 'true'
         commit-sha: ${{ inputs.commit-sha }}
-        cache-scope: epp
 
     - name: Build sidecar image
       uses: ./.github/actions/docker-build-and-push
@@ -38,4 +36,3 @@ runs:
         registry: ghcr.io/llm-d
         load: 'true'
         commit-sha: ${{ inputs.commit-sha }}
-        cache-scope: sidecar

@@ -34,16 +34,16 @@ import (
 )
 
 type mockTokenizer struct {
-	renderFunc     func(prompt string) ([]uint32, []tokenizerTypes.Offset, error)
-	renderChatFunc func(req *tokenizerTypes.RenderChatRequest) ([]uint32, *tokenization.MultiModalFeatures, error)
+	renderFunc     func(payload fwkrh.RequestPayload) ([]uint32, []tokenizerTypes.Offset, error)
+	renderChatFunc func(payload fwkrh.RequestPayload) ([]uint32, *tokenization.MultiModalFeatures, error)
 }
 
-func (m *mockTokenizer) Render(_ context.Context, prompt string) ([]uint32, []tokenizerTypes.Offset, error) {
-	return m.renderFunc(prompt)
+func (m *mockTokenizer) Render(_ context.Context, payload fwkrh.RequestPayload) ([]uint32, []tokenizerTypes.Offset, error) {
+	return m.renderFunc(payload)
 }
 
-func (m *mockTokenizer) RenderChat(_ context.Context, req *tokenizerTypes.RenderChatRequest) ([]uint32, *tokenization.MultiModalFeatures, error) {
-	return m.renderChatFunc(req)
+func (m *mockTokenizer) RenderChat(_ context.Context, payload fwkrh.RequestPayload) ([]uint32, *tokenization.MultiModalFeatures, error) {
+	return m.renderChatFunc(payload)
 }
 
 func newTestPlugin(tok tokenizer) *Plugin {
@@ -111,7 +111,7 @@ func TestProduce_PopulatesTokenizedPrompt(t *testing.T) {
 		},
 	}
 	tok := &mockTokenizer{
-		renderChatFunc: func(_ *tokenizerTypes.RenderChatRequest) ([]uint32, *tokenization.MultiModalFeatures, error) {
+		renderChatFunc: func(_ fwkrh.RequestPayload) ([]uint32, *tokenization.MultiModalFeatures, error) {
 			return []uint32{1, 2, 3, 4}, mm, nil
 		},
 	}
@@ -156,7 +156,7 @@ func TestProduce_NilBody(t *testing.T) {
 
 func TestProduce_TokenizerError(t *testing.T) {
 	tok := &mockTokenizer{
-		renderChatFunc: func(_ *tokenizerTypes.RenderChatRequest) ([]uint32, *tokenization.MultiModalFeatures, error) {
+		renderChatFunc: func(_ fwkrh.RequestPayload) ([]uint32, *tokenization.MultiModalFeatures, error) {
 			return nil, nil, assert.AnError
 		},
 	}

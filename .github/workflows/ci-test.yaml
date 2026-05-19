@@ -195,7 +195,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v6
 
-      - name: Build e2e images
+      - name: Build E2E images
         uses: ./.github/actions/e2e-build
         with:
           commit-sha: ${{ github.sha }}
@@ -244,10 +244,23 @@ jobs:
           restore-keys: |
             go-cache-
 
-      - name: Build e2e images
+      - name: Build E2E images
         uses: ./.github/actions/e2e-build
         with:
           commit-sha: ${{ github.sha }}
+
+      - name: Restore e2e image cache
+        id: image-cache
+        uses: actions/cache@v5
+        with:
+          path: /tmp/e2e-images.tar
+          key: e2e-images-${{ hashFiles('scripts/pull_images.sh', 'Makefile') }}
+          restore-keys: |
+            e2e-images-
+
+      - name: Load e2e images from cache
+        if: steps.image-cache.outputs.cache-hit == 'true'
+        run: docker load < /tmp/e2e-images.tar
 
       - name: Run make test-e2e-gaie
         shell: bash
@@ -255,6 +268,20 @@ jobs:
           GO_MOD_CACHE_VOL: ${{ steps.go-cache.outputs.mod }}
           GO_BUILD_CACHE_VOL: ${{ steps.go-cache.outputs.build }}
         run: make test-e2e-gaie-run
+
+      # Save only the pinned images (VLLM_IMAGE, VLLM_RENDER_IMAGE) so the
+      # cache post-step can persist them. Image names are read from the
+      # Makefile — the single source of truth — so no versions are duplicated
+      # here. The floating :dev image (UDS_TOKENIZER_IMAGE) is intentionally
+      # excluded; pull_images.sh always pulls it fresh.
+      - name: Save pinned e2e images to cache
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        run: |
+          VLLM_IMAGE=$(make -s env 2>/dev/null | grep '^VLLM_IMAGE=' | cut -d= -f2-)
+          VLLM_RENDER_IMAGE=$(make -s env 2>/dev/null | grep '^VLLM_RENDER_IMAGE=' | cut -d= -f2-)
+          if docker image inspect "$VLLM_IMAGE" "$VLLM_RENDER_IMAGE" &>/dev/null; then
+            docker save "$VLLM_IMAGE" "$VLLM_RENDER_IMAGE" -o /tmp/e2e-images.tar
+          fi
 
   e2e-router:
     needs: [check-changes, e2e-build]
@@ -311,10 +338,23 @@ jobs:
           restore-keys: |
             go-cache-
 
-      - name: Build e2e images
+      - name: Build E2E images
         uses: ./.github/actions/e2e-build
         with:
           commit-sha: ${{ github.sha }}
+
+      - name: Restore e2e image cache
+        id: image-cache
+        uses: actions/cache@v5
+        with:
+          path: /tmp/e2e-images.tar
+          key: e2e-images-${{ hashFiles('scripts/pull_images.sh', 'Makefile') }}
+          restore-keys: |
+            e2e-images-
+
+      - name: Load e2e images from cache
+        if: steps.image-cache.outputs.cache-hit == 'true'
+        run: docker load < /tmp/e2e-images.tar
 
       - name: Run e2e-scheduler (${{ matrix.suite.name }})
         shell: bash
@@ -323,3 +363,17 @@ jobs:
           GO_BUILD_CACHE_VOL: ${{ steps.go-cache.outputs.build }}
           E2E_LABEL_FILTER: ${{ matrix.suite.label-filter }}
         run: make test-e2e-scheduler-run
+
+      # Save only the pinned images (VLLM_IMAGE, VLLM_RENDER_IMAGE) so the
+      # cache post-step can persist them. Image names are read from the
+      # Makefile — the single source of truth — so no versions are duplicated
+      # here. The floating :dev image (UDS_TOKENIZER_IMAGE) is intentionally
+      # excluded; pull_images.sh always pulls it fresh.
+      - name: Save pinned e2e images to cache
+        if: steps.image-cache.outputs.cache-hit != 'true'
+        run: |
+          VLLM_IMAGE=$(make -s env 2>/dev/null | grep '^VLLM_IMAGE=' | cut -d= -f2-)
+          VLLM_RENDER_IMAGE=$(make -s env 2>/dev/null | grep '^VLLM_RENDER_IMAGE=' | cut -d= -f2-)
+          if docker image inspect "$VLLM_IMAGE" "$VLLM_RENDER_IMAGE" &>/dev/null; then
+            docker save "$VLLM_IMAGE" "$VLLM_RENDER_IMAGE" -o /tmp/e2e-images.tar
+          fi

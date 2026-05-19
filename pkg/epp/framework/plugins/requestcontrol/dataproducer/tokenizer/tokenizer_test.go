@@ -122,6 +122,7 @@ func TestProduce_PopulatesTokenizedPrompt(t *testing.T) {
 			ChatCompletions: &fwkrh.ChatCompletionsRequest{
 				Messages: []fwkrh.Message{{Role: "user", Content: fwkrh.Content{Raw: "hi"}}},
 			},
+			Payload: fwkrh.PayloadMap{},
 		},
 	}
 	require.NoError(t, p.Produce(context.Background(), req, nil))
@@ -166,6 +167,7 @@ func TestProduce_TokenizerError(t *testing.T) {
 			ChatCompletions: &fwkrh.ChatCompletionsRequest{
 				Messages: []fwkrh.Message{{Role: "user", Content: fwkrh.Content{Raw: "hi"}}},
 			},
+			Payload: fwkrh.PayloadMap{},
 		},
 	}
 	err := p.Produce(context.Background(), req, nil)
@@ -177,7 +179,9 @@ func TestProduce_TokenizerError(t *testing.T) {
 func TestProduce_UnsupportedBodyType(t *testing.T) {
 	p := newTestPlugin(&mockTokenizer{})
 	req := &scheduling.InferenceRequest{
-		Body: &fwkrh.InferenceRequestBody{}, // no Completions or ChatCompletions
+		Body: &fwkrh.InferenceRequestBody{
+			Payload: fwkrh.PayloadMap{},
+		},
 	}
 	err := p.Produce(context.Background(), req, nil)
 	require.Error(t, err)

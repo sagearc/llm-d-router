@@ -71,6 +71,9 @@ jobs:
     if: ${{ needs.check-changes.outputs.src == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      GO_MOD_CACHE_VOL: /home/runner/.cache/llm-d-gomodcache
+      GO_BUILD_CACHE_VOL: /home/runner/.cache/llm-d-gobuildcache
     steps:
       - name: Checkout source
         uses: actions/checkout@v6
@@ -106,18 +109,14 @@ jobs:
         run: go mod tidy -diff
 
       - name: Create Go cache dirs
-        id: go-cache
-        run: |
-          mkdir -p "$HOME/.cache/llm-d-gomodcache" "$HOME/.cache/llm-d-gobuildcache"
-          echo "mod=$HOME/.cache/llm-d-gomodcache" >> "$GITHUB_OUTPUT"
-          echo "build=$HOME/.cache/llm-d-gobuildcache" >> "$GITHUB_OUTPUT"
+        run: mkdir -p "$GO_MOD_CACHE_VOL" "$GO_BUILD_CACHE_VOL"
 
       - name: Cache Go modules and build cache
         uses: actions/cache@v5
         with:
           path: |
-            ${{ steps.go-cache.outputs.mod }}
-            ${{ steps.go-cache.outputs.build }}
+            ${{ env.GO_MOD_CACHE_VOL }}
+            ${{ env.GO_BUILD_CACHE_VOL }}
           key: go-cache-${{ runner.os }}-${{ hashFiles('go.sum') }}
           restore-keys: |
             go-cache-${{ runner.os }}-
@@ -146,16 +145,10 @@ jobs:
 
       - name: Run unit tests
         shell: bash
-        env:
-          GO_MOD_CACHE_VOL: ${{ steps.go-cache.outputs.mod }}
-          GO_BUILD_CACHE_VOL: ${{ steps.go-cache.outputs.build }}
         run: make test-unit
 
       - name: Run hermetic integration tests
         shell: bash
-        env:
-          GO_MOD_CACHE_VOL: ${{ steps.go-cache.outputs.mod }}
-          GO_BUILD_CACHE_VOL: ${{ steps.go-cache.outputs.build }}
         run: make test-integration-hermetic
 
       - name: Compare coverage against main baseline

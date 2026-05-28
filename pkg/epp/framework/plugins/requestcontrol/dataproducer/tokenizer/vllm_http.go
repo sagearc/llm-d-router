@@ -128,6 +128,7 @@ func (r *vllmHTTPRenderer) Render(ctx context.Context, payload fwkrh.RequestPayl
 	if !ok {
 		return nil, nil, errors.New("vLLM HTTP tokenizer requires a parsed PayloadMap")
 	}
+	// Shallow copy is sufficient because only the top-level model field is stamped in.
 	body := maps.Clone(pm)
 	body["model"] = r.modelName // `vllm launch render` requires the base model name
 	return r.postCompletionsRender(ctx, body)
@@ -151,6 +152,7 @@ func (r *vllmHTTPRenderer) RenderChat(ctx context.Context, payload fwkrh.Request
 	if !ok {
 		return nil, nil, errors.New("vLLM HTTP tokenizer requires a parsed PayloadMap")
 	}
+	// Shallow copy is sufficient because only the top-level model field is stamped in.
 	body := maps.Clone(pm)
 	body["model"] = r.modelName // `vllm launch render` requires the base model name
 	return r.postChatRender(ctx, body, r.chatTimeout(pm))

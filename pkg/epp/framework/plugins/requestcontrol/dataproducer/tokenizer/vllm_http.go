@@ -167,28 +167,17 @@ func (r *vllmHTTPRenderer) postChatRender(ctx context.Context, body any, timeout
 }
 
 func (r *vllmHTTPRenderer) chatTimeout(payload fwkrh.PayloadMap) time.Duration {
-	var chat fwkrh.ChatCompletionsRequest
-func (r *vllmHTTPRenderer) chatTimeout(payload fwkrh.PayloadMap) time.Duration {
-    msgs, ok := payload["messages"].([]any)
-    if !ok {
-        return r.timeout
-    }   
-    for _, m := range msgs {
-        msg, ok := m.(map[string]any)
-        if !ok {
-            continue
-        }   
-        // Array-shaped content is multimodal; use the longer timeout.
-        if arr, ok := msg["content"].([]any); ok && len(arr) > 0 { 
-            return r.mmTimeout
-        }   
-    }   
-    return r.timeout                                                                                                                                                                                
-}
-		_ = json.Unmarshal(data, &chat)
+	messages, ok := payload["messages"].([]any)
+	if !ok {
+		return r.timeout
 	}
-	for _, msg := range chat.Messages {
-		if len(msg.Content.Structured) > 0 {
+	for _, rawMessage := range messages {
+		message, ok := rawMessage.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Array-shaped content is multimodal; use the longer timeout.
+		if parts, ok := message["content"].([]any); ok && len(parts) > 0 {
 			return r.mmTimeout
 		}
 	}

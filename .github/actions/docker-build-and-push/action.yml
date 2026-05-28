@@ -1,5 +1,5 @@
 name: Docker Build - ghcr
-description: Build image using buildx. Supports pushing to a registry, loading into Docker, or exporting to an output.
+description: Build image using buildx. Supports pushing to a registry or exporting to an output.
 inputs:
   docker-file:
     required: true
@@ -21,10 +21,6 @@ inputs:
     required: false
     description: indicates whether or not this is a pre-release (not a release) build
     default: 'false'
-  load:
-    required: false
-    description: Load the image into the local Docker daemon instead of pushing it.
-    default: 'false'
   outputs:
     required: false
     description: Buildx outputs value, such as type=docker,dest=<path>/image.tar.
@@ -40,7 +36,7 @@ runs:
       uses: docker/setup-buildx-action@v4
 
     - name: Login to GitHub Container Registry
-      if: inputs.load != 'true' && inputs.outputs == ''
+      if: inputs.outputs == ''
       uses: docker/login-action@v4
       with:
         registry: ghcr.io
@@ -51,13 +47,12 @@ runs:
       uses: docker/build-push-action@v6
       with:
         file: ${{ inputs.docker-file }}
-        push: ${{ inputs.load != 'true' && inputs.outputs == '' }}
-        load: ${{ inputs.load == 'true' }}
+        push: ${{ inputs.outputs == '' }}
         outputs: ${{ inputs.outputs }}
-        platforms: ${{ (inputs.load == 'true' || inputs.outputs != '') && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+        platforms: ${{ inputs.outputs != '' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
         tags: |
           ${{ inputs.registry }}/${{ inputs.image-name }}:${{ inputs.tag }}
-          ${{ inputs.load != 'true' && inputs.outputs == '' && inputs.prerelease != 'true' && format('{0}/{1}:latest', inputs.registry, inputs.image-name) || '' }}
+          ${{ inputs.outputs == '' && inputs.prerelease != 'true' && format('{0}/{1}:latest', inputs.registry, inputs.image-name) || '' }}
         build-args: |
           LDFLAGS=-s -w
           COMMIT_SHA=${{ inputs.commit-sha || 'unknown' }}

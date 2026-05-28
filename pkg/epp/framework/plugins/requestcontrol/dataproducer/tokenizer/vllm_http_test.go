@@ -156,6 +156,57 @@ func TestVLLMHTTPRenderer_RenderChat_Multimodal(t *testing.T) {
 	assert.Equal(t, "text", parts[1].(map[string]any)["type"])
 }
 
+func TestVLLMHTTPRenderer_RenderChat_ForwardsMMContentBlocks(t *testing.T) {
+	srv, cap := httpFixture(t, nil, renderResponse{TokenIDs: []uint32{6, 7}})
+	defer srv.Close()
+
+	payload := fwkrh.PayloadMap{
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "input_audio",
+						"input_audio": map[string]any{"data": "AAAA", "format": "wav"},
+					},
+					map[string]any{
+						"type":      "video_url",
+						"video_url": map[string]any{"url": "https://example.test/video.mp4"},
+					},
+				},
+			},
+		},
+	}
+
+	r := newHTTPRenderer(t, srv)
+	tokenIDs, _, err := r.RenderChat(context.Background(), payload)
+	require.NoError(t, err)
+	assert.Equal(t, []uint32{6, 7}, tokenIDs)
+
+	var sent map[string]any
+	require.NoError(t, json.Unmarshal(cap.chat, &sent))
+	msgs, ok := sent["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, msgs, 1)
+	parts, ok := msgs[0].(map[string]any)["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 2)
+
+	audio, ok := parts[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "input_audio", audio["type"])
+	inputAudio, ok := audio["input_audio"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "wav", inputAudio["format"])
+
+	video, ok := parts[1].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "video_url", video["type"])
+	videoURL, ok := video["video_url"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "https://example.test/video.mp4", videoURL["url"])
+}
+
 func TestProduce_ChatCompletionsVLLMHTTPUsesRawPayload(t *testing.T) {
 	srv, cap := httpFixture(t, nil, renderResponse{TokenIDs: []uint32{9, 10}})
 	defer srv.Close()

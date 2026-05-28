@@ -7,20 +7,21 @@ import (
 	"github.com/stretchr/testify/require"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 
-	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/requestcontrol"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
 	attrconcurrency "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/concurrency"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/dataproducer/inflightload"
 	"github.com/llm-d/llm-d-router/test/utils"
+	igwtestutils "github.com/llm-d/llm-d-router/test/utils/igw"
 )
 
 // Test helper functions
 
 func newTestEndpoint(name string, queueSize int) scheduling.Endpoint {
 	return scheduling.NewEndpoint(
-		&fwkdl.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: name, Namespace: "default"}},
-		&fwkdl.Metrics{
+		&datalayer.EndpointMetadata{NamespacedName: k8stypes.NamespacedName{Name: name, Namespace: "default"}},
+		&datalayer.Metrics{
 			WaitingQueueSize: queueSize,
 		},
 		nil,
@@ -80,7 +81,7 @@ func TestActiveRequestScorer_Score(t *testing.T) {
 			scorer := NewActiveRequest(ctx, nil)
 			endpoints := test.endpoints()
 
-			got := scorer.Score(ctx, nil, nil, endpoints)
+			got := scorer.Score(ctx, nil, endpoints)
 
 			for i, endpoint := range endpoints {
 				score, ok := got[endpoint]
@@ -94,7 +95,7 @@ func TestActiveRequestScorer_Score(t *testing.T) {
 func TestActiveRequestScorer_UsesInFlightLoadProducerLifecycle(t *testing.T) {
 	ctx := utils.NewTestContext(t)
 
-	producerPlugin, err := inflightload.InFlightLoadProducerFactory(inflightload.InFlightLoadProducerType, nil, nil)
+	producerPlugin, err := inflightload.InFlightLoadProducerFactory(inflightload.InFlightLoadProducerType, nil, igwtestutils.NewTestHandle(ctx))
 	require.NoError(t, err)
 	producer := producerPlugin.(*inflightload.InFlightLoadProducer)
 	scorer := NewActiveRequest(ctx, nil)
@@ -116,7 +117,7 @@ func TestActiveRequestScorer_UsesInFlightLoadProducerLifecycle(t *testing.T) {
 
 	require.Equal(t, int64(1), inFlightRequests(t, podA))
 	require.Equal(t, int64(0), inFlightRequests(t, podB))
-	scores := scorer.Score(ctx, nil, req, endpoints)
+	scores := scorer.Score(ctx, req, endpoints)
 	assert.Equal(t, 0.0, scores[podA])
 	assert.Equal(t, 1.0, scores[podB])
 
@@ -126,7 +127,7 @@ func TestActiveRequestScorer_UsesInFlightLoadProducerLifecycle(t *testing.T) {
 
 	require.Equal(t, int64(0), inFlightRequests(t, podA))
 	require.Equal(t, int64(0), inFlightRequests(t, podB))
-	scores = scorer.Score(ctx, nil, req, endpoints)
+	scores = scorer.Score(ctx, req, endpoints)
 	assert.Equal(t, 1.0, scores[podA])
 	assert.Equal(t, 1.0, scores[podB])
 }
@@ -183,13 +184,13 @@ func TestActiveRequest_IdleThresholdAndMaxBusyScore(t *testing.T) {
 		podB := newTestEndpoint("pod-b", 0)
 
 		// Both idle, so both score 1.0.
-		scores := scorer.Score(ctx, nil, nil, []scheduling.Endpoint{podA, podB})
+		scores := scorer.Score(ctx, nil, []scheduling.Endpoint{podA, podB})
 		assert.Equal(t, 1.0, scores[podA])
 		assert.Equal(t, 1.0, scores[podB])
 
 		podA.Put(attrconcurrency.InFlightLoadDataKey.String(), &attrconcurrency.InFlightLoad{Requests: 1})
 
-		scores = scorer.Score(ctx, nil, nil, []scheduling.Endpoint{podA, podB})
+		scores = scorer.Score(ctx, nil, []scheduling.Endpoint{podA, podB})
 		assert.Equal(t, 0.0, scores[podA], "Busy pod scores 0.0 in binary mode")
 		assert.Equal(t, 1.0, scores[podB], "Idle pod scores 1.0")
 	})
@@ -205,7 +206,7 @@ func TestActiveRequest_IdleThresholdAndMaxBusyScore(t *testing.T) {
 		podB := newTestEndpointWithLoad("pod-b", 2)
 		podC := newTestEndpoint("pod-c", 0)
 
-		scores := scorer.Score(ctx, nil, nil, []scheduling.Endpoint{podA, podB, podC})
+		scores := scorer.Score(ctx, nil, []scheduling.Endpoint{podA, podB, podC})
 		assert.Equal(t, 1.0, scores[podA], "Pod with 1 request is idle (threshold=1)")
 		assert.Equal(t, 0.0, scores[podB], "Pod with 2 requests (busiest) scores 0.0")
 		assert.Equal(t, 1.0, scores[podC], "Pod with 0 requests is idle")

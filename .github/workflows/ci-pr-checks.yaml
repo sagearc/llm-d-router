@@ -41,11 +41,11 @@ jobs:
               - test/**
               - .github/actions/docker-build-and-push/action.yml
               - .github/actions/e2e-runner-setup/action.yml
-              - .github/workflows/ci-test.yaml
+              - .github/workflows/ci-pr-checks.yaml
             helm:
               - 'config/charts/**'
               - 'hack/verify-helm.sh'
-              - '.github/workflows/ci-test.yaml'
+              - '.github/workflows/ci-pr-checks.yaml'
 
   verify-helm-charts:
     needs: check-changes
@@ -306,6 +306,7 @@ jobs:
           path: ${{ runner.temp }}/e2e-images
 
       - name: Load e2e images
+        shell: bash
         run: |
           for image in "${RUNNER_TEMP}"/e2e-images/*.tar; do
             docker load --input "$image"
@@ -384,6 +385,7 @@ jobs:
           path: ${{ runner.temp }}/e2e-images
 
       - name: Load e2e images
+        shell: bash
         run: |
           for image in "${RUNNER_TEMP}"/e2e-images/*.tar; do
             docker load --input "$image"

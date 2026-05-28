@@ -12,7 +12,7 @@ inputs:
     description: Image tag
   github-token:
     required: false
-    description: GitHub token for login. Required when load is false.
+    description: GitHub token for login. Required when pushing.
     default: ''
   registry:
     required: true

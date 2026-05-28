@@ -205,22 +205,57 @@ jobs:
           retention-days: 400
           overwrite: true
 
-  e2e-build:
+  e2e-build-image:
     needs: check-changes
     if: ${{ needs.check-changes.outputs.src == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: builder
+            docker-file: Dockerfile.builder
+            image-name: llm-d-builder
+          - name: epp
+            docker-file: Dockerfile.epp
+            image-name: llm-d-router-endpoint-picker
+          - name: sidecar
+            docker-file: Dockerfile.sidecar
+            image-name: llm-d-router-disagg-sidecar
+    name: e2e-build (${{ matrix.image.name }})
     steps:
       - name: Checkout source
         uses: actions/checkout@v6
 
-      - name: Build E2E images
-        uses: ./.github/actions/e2e-build
+      - name: Build ${{ matrix.image.name }} image
+        uses: ./.github/actions/docker-build-and-push
         with:
+          docker-file: ${{ matrix.image.docker-file }}
+          image-name: ${{ matrix.image.image-name }}
+          tag: dev
+          registry: ghcr.io/llm-d
+          load: 'true'
           commit-sha: ${{ github.sha }}
 
+  e2e-build:
+    needs:
+      - check-changes
+      - e2e-build-image
+    if: ${{ always() && needs.check-changes.outputs.src == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check e2e image builds
+        env:
+          E2E_BUILD_IMAGE_RESULT: ${{ needs.e2e-build-image.result }}
+        run: |
+          echo "e2e-build-image: ${E2E_BUILD_IMAGE_RESULT}"
+          test "${E2E_BUILD_IMAGE_RESULT}" = "success"
+
   e2e-gaie:
-    needs: check-changes
+    needs:
+      - check-changes
+      - e2e-build
     if: ${{ needs.check-changes.outputs.src == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -274,7 +309,9 @@ jobs:
             -o /tmp/e2e-images.tar
 
   e2e-router:
-    needs: check-changes
+    needs:
+      - check-changes
+      - e2e-build
     if: ${{ needs.check-changes.outputs.src == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45

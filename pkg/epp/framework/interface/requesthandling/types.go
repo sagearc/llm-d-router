@@ -20,8 +20,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
+	"github.com/llm-d/llm-d-kv-cache/pkg/kvcache/kvblock"
+	"github.com/llm-d/llm-d-kv-cache/pkg/tokenization"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -66,7 +70,7 @@ func (RawPayload) AsMap() (PayloadMap, bool) { return nil, false }
 
 // InferenceRequestBody contains the request-body fields that we parse out as user input,
 // to be used in forming scheduling decisions.
-// An InferenceRequestBody must contain exactly one of CompletionsRequest, ChatCompletionsRequest, ResponsesRequest, ConversationsRequest, or EmbeddingsRequest.
+// An InferenceRequestBody must contain exactly one of CompletionsRequest, ChatCompletionsRequest, ResponsesRequest, ConversationsRequest, EmbeddingsRequest, or GenerateRequest.
 type InferenceRequestBody struct {
 	// CompletionsRequest is the representation of the OpenAI /v1/completions request body.
 	Completions *CompletionsRequest `json:"completions,omitempty"`
@@ -78,6 +82,8 @@ type InferenceRequestBody struct {
 	Conversations *ConversationsRequest `json:"conversations,omitempty"`
 	// EmbeddingsRequest is the representation of the OpenAI /v1/embeddings request body.
 	Embeddings *EmbeddingsRequest `json:"embeddings,omitempty"`
+	// GenerateRequest is the representation of the vLLM /inference/v1/generate request body.
+	Generate *GenerateRequest `json:"generate,omitempty"`
 	// Payload contains the unmarshaled request payload or raw bytes.
 	// If the payload is unmarshaled, we can perform advanced processing (like prefix cache aware routing).
 	// If it remains as raw bytes, such processing may not be supported.
@@ -143,6 +149,8 @@ func (r *InferenceRequestBody) PromptText() string {
 		return string(b)
 	case r.Embeddings != nil:
 		return r.Embeddings.Input.PlainText()
+	case r.Generate != nil:
+		return ""
 	default:
 		return ""
 	}
@@ -157,6 +165,9 @@ func (r *InferenceRequestBody) InputTokenCountHint() int {
 	}
 	if r.Embeddings != nil {
 		return r.Embeddings.Input.TokenCountHint()
+	}
+	if r.Generate != nil {
+		return len(r.Generate.TokenIDs)
 	}
 	return -1
 }
@@ -176,6 +187,9 @@ func (r *InferenceRequestBody) CacheSalt() string {
 	}
 	if r.Embeddings != nil {
 		return r.Embeddings.CacheSalt
+	}
+	if r.Generate != nil {
+		return r.Generate.CacheSalt
 	}
 	return ""
 }
@@ -429,6 +443,87 @@ func (e *EmbeddingsRequest) String() string {
 	return fmt.Sprintf("{InputType: %T}", e.Input)
 }
 
+// GenerateRequest is a structured representation of the fields we parse out of the vLLM
+// request at /inference/v1/generate.
+// Unlike the OpenAI-compatible endpoints, this API accepts pre-tokenized input (token IDs).
+// This struct includes fields usable for plugins and scheduling decisions.
+type GenerateRequest struct {
+	// TokenIDs are the pre-tokenized input token IDs.
+	TokenIDs []uint32 `json:"token_ids"`
+	// Features carries multimodal metadata (per-modality content hashes and
+	// placeholder ranges) parsed out of the wire `features` block. Populated
+	// by UnmarshalJSON; not itself a JSON-tagged field.
+	Features *tokenization.MultiModalFeatures `json:"-"`
+	// CacheSalt is an optional request parameter to isolate prefix caches for security reasons.
+	CacheSalt string `json:"cache_salt,omitempty"`
+}
+
+func (r *GenerateRequest) String() string {
+	if r == nil {
+		return nilStr
+	}
+	mmHashes := "{}"
+	if r.Features != nil && len(r.Features.MMHashes) > 0 {
+		keys := make([]string, 0, len(r.Features.MMHashes))
+		for k := range r.Features.MMHashes {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var sb strings.Builder
+		sb.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			fmt.Fprintf(&sb, "%s:%d", k, len(r.Features.MMHashes[k]))
+		}
+		sb.WriteByte('}')
+		mmHashes = sb.String()
+	}
+	return fmt.Sprintf("{TokenIDsCount: %d, MMHashes: %s}", len(r.TokenIDs), mmHashes)
+}
+
+func (r *GenerateRequest) UnmarshalJSON(data []byte) error {
+	type wirePlaceholder struct {
+		Offset int `json:"offset"`
+		Length int `json:"length"`
+	}
+	var raw struct {
+		TokenIDs  []float64 `json:"token_ids"`
+		CacheSalt string    `json:"cache_salt,omitempty"`
+		Features  *struct {
+			MMHashes       map[string][]string          `json:"mm_hashes"`
+			MMPlaceholders map[string][]wirePlaceholder `json:"mm_placeholders"`
+		} `json:"features,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.CacheSalt = raw.CacheSalt
+	r.TokenIDs = make([]uint32, len(raw.TokenIDs))
+	for i, v := range raw.TokenIDs {
+		if v < 0 || v > math.MaxUint32 || v != math.Trunc(v) {
+			return fmt.Errorf("token_ids[%d]: invalid value %v", i, v)
+		}
+		r.TokenIDs[i] = uint32(v)
+	}
+	if raw.Features != nil {
+		ranges := make(map[string][]kvblock.PlaceholderRange, len(raw.Features.MMPlaceholders))
+		for modality, ws := range raw.Features.MMPlaceholders {
+			out := make([]kvblock.PlaceholderRange, len(ws))
+			for i, w := range ws {
+				out[i] = kvblock.PlaceholderRange{Offset: w.Offset, Length: w.Length}
+			}
+			ranges[modality] = out
+		}
+		r.Features = &tokenization.MultiModalFeatures{
+			MMHashes:       raw.Features.MMHashes,
+			MMPlaceholders: ranges,
+		}
+	}
+	return nil
+}
+
 // ConversationItem represents a single item in a conversation
 type ConversationItem struct {
 	// Type specifies the item type (message, file, etc.)
@@ -521,7 +616,7 @@ type Usage struct {
 	PromptTokens       int                 `json:"prompt_tokens"`
 	CompletionTokens   int                 `json:"completion_tokens"`
 	TotalTokens        int                 `json:"total_tokens"`
-	PromptTokenDetails *PromptTokenDetails `json:"prompt_token_details,omitempty"`
+	PromptTokenDetails *PromptTokenDetails `json:"prompt_tokens_details,omitempty"`
 }
 
 type PromptTokenDetails struct {

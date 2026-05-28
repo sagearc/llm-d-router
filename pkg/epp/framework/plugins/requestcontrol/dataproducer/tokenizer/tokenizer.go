@@ -203,7 +203,8 @@ func (p *Plugin) tokenize(ctx context.Context, request *scheduling.InferenceRequ
 
 	traceLogger.Info("Request body present",
 		"hasCompletions", request.Body.Completions != nil,
-		"hasChatCompletions", request.Body.ChatCompletions != nil)
+		"hasChatCompletions", request.Body.ChatCompletions != nil,
+		"hasGenerate", request.Body.Generate != nil)
 
 	var tokenIDs []uint32
 	var mmFeatures *tokenization.MultiModalFeatures
@@ -216,6 +217,12 @@ func (p *Plugin) tokenize(ctx context.Context, request *scheduling.InferenceRequ
 	case request.Body.ChatCompletions != nil:
 		traceLogger.Info("Calling RenderChat for chat completions", "messageCount", len(request.Body.ChatCompletions.Messages))
 		tokenIDs, mmFeatures, err = p.tokenizer.RenderChat(ctx, request.Body.Payload)
+	case request.Body.Generate != nil:
+		traceLogger.Info("Using pre-tokenized token IDs from generate request", "tokenCount", len(request.Body.Generate.TokenIDs))
+		return &fwkrh.TokenizedPrompt{
+			TokenIDs:           request.Body.Generate.TokenIDs,
+			MultiModalFeatures: convertMMFeaturesToUpstream(request.Body.Generate.Features),
+		}, nil
 	default:
 		return nil, errors.New("unsupported request body type, skipping tokenization")
 	}

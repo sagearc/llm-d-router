@@ -240,7 +240,8 @@ jobs:
           image-name: ${{ matrix.image.image-name }}
           tag: dev
           registry: ghcr.io/llm-d
-          outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.image.archive }}.tar
+          push: 'false'
+          buildx-outputs: type=docker,dest=${{ runner.temp }}/${{ matrix.image.archive }}.tar
           commit-sha: ${{ github.sha }}
 
       - name: Pull ${{ matrix.image.name }} image

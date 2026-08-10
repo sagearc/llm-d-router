@@ -28,9 +28,9 @@ this single endpoint. Metric authentication and TLS are configurable via `--metr
 
 ### Model-server metrics (data layer)
 
-The `metrics-data-source` plugin scrapes each model-server pod's own `/metrics` endpoint (path
-configurable) and feeds the results into the data layer for scorers. These are the model server's
-metrics, distinct from the EPP metrics above; scrape the pods directly to collect them.
+The `metrics-data-source` plugin scrapes each model-server endpoint's Prometheus exposition. Its path
+and query parameters are configurable, with `/metrics` as the default path. The results feed the data
+layer for scorers. These are model-server metrics, distinct from the EPP metrics above.
 
 ### Embedded llm-d-kv-cache metrics
 

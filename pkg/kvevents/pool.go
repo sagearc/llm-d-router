@@ -286,6 +286,15 @@ func (p *Pool) processRawMessage(ctx context.Context, msg *RawMessage) {
 	if msg.SourceEndpoint != "" {
 		podID = msg.SourceEndpoint
 	}
+	if msg.ExpectedDataParallelRank != nil && batch.DataParallelRank != nil &&
+		*msg.ExpectedDataParallelRank != *batch.DataParallelRank {
+		logger.Error(
+			fmt.Errorf("received data parallel rank %d, expected %d", *batch.DataParallelRank, *msg.ExpectedDataParallelRank),
+			"Rejected KV-event batch with mismatched data parallel rank",
+			"sourceEndpoint", msg.SourceEndpoint,
+		)
+		return
+	}
 
 	p.processEventBatch(ctx, &batch, podID, modelName)
 }

@@ -207,6 +207,61 @@ func TestProduce_UsesTokenizedPrompt(t *testing.T) {
 	assert.Nil(t, info2.MM(), "text-only request must leave MM untracked")
 }
 
+func TestProduce_IsolatesLogicalRanksBehindSharedFrontend(t *testing.T) {
+	ctx := utils.NewTestContext(t)
+	key := kvblock.BlockHash(0xCAFE)
+	rank0ID := "default/member-dp-0"
+	rank1ID := "default/member-dp-1"
+	endpoints := []scheduling.Endpoint{
+		scheduling.NewEndpoint(&fwkdl.EndpointMetadata{
+			ID:                 k8stypes.NamespacedName{Namespace: "default", Name: "member-dp-0"},
+			Address:            "10.0.0.1",
+			Port:               "8000",
+			DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 0, Selector: 0},
+		}, nil, nil),
+		scheduling.NewEndpoint(&fwkdl.EndpointMetadata{
+			ID:                 k8stypes.NamespacedName{Namespace: "default", Name: "member-dp-1"},
+			Address:            "10.0.0.1",
+			Port:               "8000",
+			DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 1, Selector: 1},
+		}, nil, nil),
+	}
+	idx := &fakeKVCacheIndexer{
+		computeFromTokens: func(_ context.Context, _ []uint32, _ string, _ []*kvblock.BlockExtraFeatures) ([]kvblock.BlockHash, error) {
+			return []kvblock.BlockHash{key}, nil
+		},
+		index: &fakeKVBlockIndex{
+			lookup: func(_ context.Context, _ []kvblock.BlockHash, podSet sets.Set[string]) (map[kvblock.BlockHash][]kvblock.PodEntry, error) {
+				assert.Equal(t, sets.New(rank0ID, rank1ID), podSet)
+				return map[kvblock.BlockHash][]kvblock.PodEntry{
+					key: {{PodIdentifier: rank1ID}},
+				}, nil
+			},
+		},
+	}
+	scorer := &fakeKVBlockScorer{
+		score: func(_ context.Context, _ []kvblock.BlockHash, _ map[kvblock.BlockHash][]kvblock.PodEntry) (map[string]float64, error) {
+			return map[string]float64{rank1ID: 1}, nil
+		},
+	}
+	p := newProducerWithIndexer(ctx, idx, scorer)
+	request := &scheduling.InferenceRequest{
+		RequestID:   "logical-ranks",
+		TargetModel: "model",
+		Body: &fwkrh.InferenceRequestBody{
+			TokenizedPrompt: &fwkrh.TokenizedPrompt{PerPromptTokens: [][]uint32{{1}}},
+		},
+	}
+
+	require.NoError(t, p.Produce(ctx, request, endpoints))
+	raw0, ok := endpoints[0].Get(p.dk.String())
+	require.True(t, ok)
+	raw1, ok := endpoints[1].Get(p.dk.String())
+	require.True(t, ok)
+	assert.Equal(t, 0, raw0.(*attrprefix.PrefixCacheMatchInfo).MatchBlocks())
+	assert.Equal(t, 1, raw1.(*attrprefix.PrefixCacheMatchInfo).MatchBlocks())
+}
+
 // No tokens → no-op (no prompt-string fallback).
 func TestProduce_NoTokens_NoOp(t *testing.T) {
 	ctx := utils.NewTestContext(t)
@@ -760,16 +815,19 @@ type fakeSubscriberManager struct {
 	ids             []string
 	sourceEndpoints []string
 	endpoints       []string
+	expectedRanks   []*int
 }
 
 func (f *fakeSubscriberManager) EnsureSubscriber(
 	_ context.Context,
 	id, sourceEndpoint, endpoint, _, _ string,
+	expectedRank *int,
 	_ bool,
 ) error {
 	f.ids = append(f.ids, id)
 	f.sourceEndpoints = append(f.sourceEndpoints, sourceEndpoint)
 	f.endpoints = append(f.endpoints, endpoint)
+	f.expectedRanks = append(f.expectedRanks, expectedRank)
 	return nil
 }
 func (f *fakeSubscriberManager) RemoveSubscriber(_ context.Context, _ string) {}

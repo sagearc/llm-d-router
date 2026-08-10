@@ -116,13 +116,16 @@ var _ Datastore = &datastore{}
 func NewDatastore(parentCtx context.Context, epFactory datalayer.EndpointFactory) Datastore {
 	// Initialize with defaults
 	return &datastore{
-		parentCtx:     parentCtx,
-		pool:          nil,
-		mu:            sync.RWMutex{},
-		objectives:    make(map[string]*v1alpha2.InferenceObjective),
-		modelRewrites: newModelRewriteStore(),
-		pods:          &sync.Map{},
-		epf:           epFactory,
+		parentCtx:      parentCtx,
+		pool:           nil,
+		mu:             sync.RWMutex{},
+		objectives:     make(map[string]*v1alpha2.InferenceObjective),
+		modelRewrites:  newModelRewriteStore(),
+		pods:           &sync.Map{},
+		sourcePods:     make(map[types.NamespacedName]*corev1.Pod),
+		podGroups:      make(map[types.NamespacedName]logicalDataParallelGroup),
+		endpointGroups: make(map[types.NamespacedName]logicalDataParallelGroup),
+		epf:            epFactory,
 	}
 }
 
@@ -139,6 +142,11 @@ type datastore struct {
 	// key: types.NamespacedName, value: fwkdl.Endpoint
 	pods *sync.Map
 	epf  datalayer.EndpointFactory
+	// discoveryMu serializes logical group reconciliation.
+	discoveryMu    sync.RWMutex
+	sourcePods     map[types.NamespacedName]*corev1.Pod
+	podGroups      map[types.NamespacedName]logicalDataParallelGroup
+	endpointGroups map[types.NamespacedName]logicalDataParallelGroup
 	// needsResync forces the next PoolSet to run podResyncAll even when the pool is unchanged.
 	// PoolSet stores the pool before resyncing, so without this flag a PoolSet retried after a
 	// resync failure would compare the incoming pool against the already-stored identical pool
@@ -157,6 +165,11 @@ func (ds *datastore) Clear() {
 	ds.pool = nil
 	ds.objectives = make(map[string]*v1alpha2.InferenceObjective)
 	ds.modelRewrites = newModelRewriteStore()
+	ds.discoveryMu.Lock()
+	ds.sourcePods = make(map[types.NamespacedName]*corev1.Pod)
+	ds.podGroups = make(map[types.NamespacedName]logicalDataParallelGroup)
+	ds.endpointGroups = make(map[types.NamespacedName]logicalDataParallelGroup)
+	ds.discoveryMu.Unlock()
 	// stop all pods go routines before clearing the pods map.
 	ds.pods.Range(func(_, v any) bool {
 		ds.epf.ReleaseEndpoint(v.(fwkdl.Endpoint))
@@ -285,6 +298,9 @@ func (ds *datastore) ModelRewriteGetAll() []*v1alpha2.InferenceModelRewrite {
 // TODO: add a flag for callers to specify the staleness threshold for metrics.
 // ref: https://github.com/kubernetes-sigs/gateway-api-inference-extension/pull/1046#discussion_r2246351694
 func (ds *datastore) PodList(predicate func(fwkdl.Endpoint) bool) []fwkdl.Endpoint {
+	ds.discoveryMu.RLock()
+	defer ds.discoveryMu.RUnlock()
+
 	res := []fwkdl.Endpoint{}
 
 	ds.pods.Range(func(k, v any) bool {
@@ -323,6 +339,10 @@ func (ds *datastore) podUpdateOrAddIfNotExist(ctx context.Context, pod *corev1.P
 	if pool == nil {
 		return nil
 	}
+	if hasLogicalDataParallelLabel(pod) {
+		return ds.upsertLogicalDataParallelPod(ctx, pod, pool)
+	}
+	ds.removeLogicalDataParallelPod(pod.Namespace, pod.Name)
 
 	labels := make(map[string]string, len(pod.GetLabels()))
 	maps.Copy(labels, pod.GetLabels())
@@ -392,6 +412,19 @@ func (ds *datastore) podUpdateOrAddIfNotExist(ctx context.Context, pod *corev1.P
 }
 
 func (ds *datastore) PodDelete(podName string) {
+	ds.discoveryMu.Lock()
+	var affectedGroups []logicalDataParallelGroup
+	for id, group := range ds.podGroups {
+		if id.Name == podName {
+			delete(ds.sourcePods, id)
+			delete(ds.podGroups, id)
+			affectedGroups = append(affectedGroups, group)
+		}
+	}
+	for _, group := range affectedGroups {
+		ds.withdrawLogicalDataParallelGroupLocked(group)
+	}
+	ds.discoveryMu.Unlock()
 	ds.pods.Range(func(k, v any) bool {
 		ep := v.(fwkdl.Endpoint)
 		if ep.GetMetadata().Name == podName {
@@ -459,12 +492,30 @@ func (ds *datastore) podResyncAll(ctx context.Context, reader client.Reader) err
 		return fmt.Errorf("failed to list pods - %w", err)
 	}
 
+	ds.discoveryMu.Lock()
+	ds.sourcePods = make(map[types.NamespacedName]*corev1.Pod)
+	ds.podGroups = make(map[types.NamespacedName]logicalDataParallelGroup)
+	ds.discoveryMu.Unlock()
+
 	// Track active endpoints by their full name (including rank suffix).
 	// This ensures orphaned rank endpoints are removed when targetPorts shrinks.
 	activeEndpoints := sets.New[types.NamespacedName]()
 	var errs []error
 	for _, pod := range podList.Items {
 		if !podutil.IsPodReady(&pod) {
+			continue
+		}
+		if hasLogicalDataParallelLabel(&pod) {
+			ds.discoveryMu.Lock()
+			id := types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}
+			ds.sourcePods[id] = pod.DeepCopy()
+			group, err := logicalDataParallelGroupForPod(&pod)
+			if err != nil {
+				errs = append(errs, err)
+			} else {
+				ds.podGroups[id] = group
+			}
+			ds.discoveryMu.Unlock()
 			continue
 		}
 		// Calculate expected endpoint names based on current targetPorts.
@@ -476,6 +527,24 @@ func (ds *datastore) podResyncAll(ctx context.Context, reader client.Reader) err
 			errs = append(errs, err)
 		}
 	}
+
+	ds.discoveryMu.Lock()
+	groups := sets.New[logicalDataParallelGroup]()
+	for _, group := range ds.podGroups {
+		groups.Insert(group)
+	}
+	for _, group := range ds.endpointGroups {
+		groups.Insert(group)
+	}
+	for group := range groups {
+		if err := ds.reconcileLogicalDataParallelGroupLocked(ctx, group, ds.pool); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for id := range ds.endpointGroups {
+		activeEndpoints.Insert(id)
+	}
+	ds.discoveryMu.Unlock()
 
 	// Remove endpoints that don't belong to the pool, are not ready, or are orphaned ranks.
 	ds.pods.Range(func(k, v any) bool {

@@ -815,8 +815,9 @@ func RecordSchedulerAttempt(err error, targetModelName string, result *fwksched.
 			if len(primaryResults.TargetEndpoints) > 0 {
 				metadata := primaryResults.TargetEndpoints[0].GetMetadata()
 				if metadata != nil {
-					schedulerAttemptsTotal.WithLabelValues(SchedulerStatusSuccess, targetModelName, metadata.Name, metadata.ID.Namespace, metadata.Port).Inc()
-					llmdSchedulerAttemptsTotal.WithLabelValues(SchedulerStatusSuccess, targetModelName, metadata.Name, metadata.ID.Namespace, metadata.Port).Inc()
+					endpointName := metadata.GetObservabilityName()
+					schedulerAttemptsTotal.WithLabelValues(SchedulerStatusSuccess, targetModelName, endpointName, metadata.ID.Namespace, metadata.Port).Inc()
+					llmdSchedulerAttemptsTotal.WithLabelValues(SchedulerStatusSuccess, targetModelName, endpointName, metadata.ID.Namespace, metadata.Port).Inc()
 					return
 				}
 			}

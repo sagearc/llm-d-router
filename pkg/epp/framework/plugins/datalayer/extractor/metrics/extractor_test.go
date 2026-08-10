@@ -21,9 +21,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	dto "github.com/prometheus/client_model/go"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/utils/ptr"
 
@@ -264,6 +267,87 @@ func TestExtractorMultiEngine(t *testing.T) {
 	if epSgl.GetMetrics().WaitingQueueSize != 20 {
 		t.Errorf("sglang: expected queue size 20, got %v", epSgl.GetMetrics().WaitingQueueSize)
 	}
+}
+
+func TestExtractorFiltersLogicalDataParallelMetrics(t *testing.T) {
+	registry := NewMappingRegistry()
+	mapping, err := NewMappingFromConfig(MappingConfig{
+		DataParallelRankLabel: "dp_rank",
+		Queue:                 "sglang:num_queue_reqs",
+		Running:               "sglang:num_running_reqs",
+		KVUsage:               "sglang:token_usage",
+		MaxTokenCapacity:      "sglang:max_total_num_tokens",
+		Timestamp:             "sglang:timestamp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(DefaultEngineType, mapping); err != nil {
+		t.Fatal(err)
+	}
+	extractor, err := NewCoreMetricsExtractor(registry, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rank0 := map[string]string{"dp_rank": "0"}
+	rank1 := map[string]string{"dp_rank": "1"}
+	families := sourcemetrics.PrometheusMetricMap{
+		"sglang:num_queue_reqs":   makeMetricFamily("sglang:num_queue_reqs", makeMetric(rank1, 11, 1), makeMetric(rank0, 99, 2)),
+		"sglang:num_running_reqs": makeMetricFamily("sglang:num_running_reqs", makeMetric(rank1, 12, 1), makeMetric(rank0, 98, 2)),
+		"sglang:token_usage":      makeMetricFamily("sglang:token_usage", makeMetric(rank1, 0.13, 1), makeMetric(rank0, 0.97, 2)),
+		"sglang:max_total_num_tokens": makeMetricFamily(
+			"sglang:max_total_num_tokens",
+			makeMetric(rank1, 2048, 1),
+			makeMetric(rank0, 4096, 2),
+		),
+		"sglang:timestamp": makeMetricFamily(
+			"sglang:timestamp",
+			makeMetric(rank1, 1000.25, 1),
+			makeMetric(rank0, 2000.5, 2),
+		),
+	}
+	endpoint := fwkdl.NewEndpoint(&fwkdl.EndpointMetadata{
+		DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 1, Selector: 1},
+	}, nil)
+
+	if err := extractor.Extract(context.Background(), fwkdl.PollInput[sourcemetrics.PrometheusMetricMap]{
+		Payload:  families,
+		Endpoint: endpoint,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got := endpoint.GetMetrics()
+	if got.WaitingQueueSize != 11 || got.RunningRequestsSize != 12 ||
+		got.KVCacheUsagePercent != 0.13 || got.KvCacheMaxTokenCapacity != 2048 ||
+		!got.UpdateTime.Equal(time.Unix(1000, 250000000)) {
+		t.Fatalf("logical rank received another rank's metrics: %+v", got)
+	}
+}
+
+func TestExtractorRejectsMissingConfiguredTimestamp(t *testing.T) {
+	registry := NewMappingRegistry()
+	mapping, err := NewMappingFromConfig(MappingConfig{
+		DataParallelRankLabel: "dp_rank",
+		Queue:                 "sglang_num_waiting_reqs",
+		Timestamp:             "sglang_timestamp",
+	})
+	require.NoError(t, err)
+	require.NoError(t, registry.Register(DefaultEngineType, mapping))
+	extractor, err := NewCoreMetricsExtractor(registry, "")
+	require.NoError(t, err)
+
+	endpoint := fwkdl.NewEndpoint(&fwkdl.EndpointMetadata{
+		DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 1, Selector: 1},
+	}, nil)
+	err = extractor.Extract(context.Background(), fwkdl.PollInput[sourcemetrics.PrometheusMetricMap]{
+		Payload: sourcemetrics.PrometheusMetricMap{
+			"sglang_num_waiting_reqs": makeMetricFamily("sglang_num_waiting_reqs", makeMetric(map[string]string{"dp_rank": "1"}, 3, 1)),
+		},
+		Endpoint: endpoint,
+	})
+	require.ErrorContains(t, err, "extracting metrics timestamp")
+	assert.True(t, endpoint.GetMetrics().UpdateTime.IsZero())
 }
 
 func TestBackwardCompatibility(t *testing.T) {

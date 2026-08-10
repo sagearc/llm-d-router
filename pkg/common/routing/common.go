@@ -19,6 +19,12 @@ const (
 	// DataParallelEndpointHeader is the header name used to indicate the worker <ip:port> for Data Parallel
 	DataParallelEndpointHeader = "x-data-parallel-host-port"
 
+	// DataParallelRankHeader selects a scheduler behind a shared inference frontend.
+	DataParallelRankHeader = "x-data-parallel-rank"
+
+	// PrefillDataParallelRankHeader carries the independently selected Prefill scheduler to the sidecar.
+	PrefillDataParallelRankHeader = "x-prefiller-data-parallel-rank"
+
 	// KVCacheSourceHeader is the header name used to indicate the worker <ip:port> holding
 	// the most cached prefix KV blocks for the request, to pull from over the P2P connector
 	// instead of recomputing them

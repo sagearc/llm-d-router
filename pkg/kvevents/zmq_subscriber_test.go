@@ -145,10 +145,11 @@ type replayMessage struct {
 }
 
 type replayBuffer struct {
-	mu       sync.RWMutex
-	messages []replayMessage
-	fail     atomic.Bool
-	requests atomic.Int32
+	mu        sync.RWMutex
+	messages  []replayMessage
+	fail      atomic.Bool
+	topicless atomic.Bool
+	requests  atomic.Int32
 }
 
 func (b *replayBuffer) set(messages ...replayMessage) {
@@ -190,15 +191,27 @@ func startReplayBuffer(t *testing.T, ctx context.Context, endpoint string) *repl
 				if replay.seq < startSeq {
 					continue
 				}
-				if err := router.Send(zmq4.NewMsgFrom(
-					clientID, []byte{}, topic, seqFrame(replay.seq), replay.payload,
-				)); err != nil {
+				frames := [][]byte{
+					clientID, {}, topic, seqFrame(replay.seq), replay.payload,
+				}
+				if buffer.topicless.Load() {
+					frames = [][]byte{
+						clientID, {}, seqFrame(replay.seq), replay.payload,
+					}
+				}
+				if err := router.Send(zmq4.NewMsgFrom(frames...)); err != nil {
 					return
 				}
 			}
-			if err := router.Send(zmq4.NewMsgFrom(
-				clientID, []byte{}, []byte{}, seqFrame(math.MaxUint64), []byte{},
-			)); err != nil {
+			endFrames := [][]byte{
+				clientID, {}, {}, seqFrame(math.MaxUint64), {},
+			}
+			if buffer.topicless.Load() {
+				endFrames = [][]byte{
+					clientID, {}, seqFrame(math.MaxUint64), {},
+				}
+			}
+			if err := router.Send(zmq4.NewMsgFrom(endFrames...)); err != nil {
 				return
 			}
 		}
@@ -277,7 +290,7 @@ func TestZMQSubscriber_ReceivesMessages(t *testing.T) {
 	// Start subscriber — remote=false means it binds (Listen).
 	endpoint := "tcp://127.0.0.1:15559"
 	subManager := kvevents.NewSubscriberManager(pool)
-	err = subManager.EnsureSubscriber(ctx, "test-pod", "", endpoint, "", "kv@", false)
+	err = subManager.EnsureSubscriber(ctx, "test-pod", "", endpoint, "", "kv@", nil, false)
 	require.NoError(t, err)
 
 	// Give subscriber time to bind.
@@ -329,6 +342,7 @@ func TestZMQSubscribers_SameTopicUsesServingEndpointIdentity(t *testing.T) {
 			zmqEndpoints[i],
 			"",
 			"kv@",
+			nil,
 			false,
 		))
 	}
@@ -403,7 +417,7 @@ func TestZMQSubscriber_ShortSequenceFrameSkipped(t *testing.T) {
 	endpoint := fmt.Sprintf("tcp://%s", ln.Addr().String())
 	ln.Close()
 	subManager := kvevents.NewSubscriberManager(pool)
-	err = subManager.EnsureSubscriber(ctx, "test-pod", "", endpoint, "", "kv@", false)
+	err = subManager.EnsureSubscriber(ctx, "test-pod", "", endpoint, "", "kv@", nil, false)
 	require.NoError(t, err)
 	time.Sleep(100 * time.Millisecond)
 
@@ -440,6 +454,12 @@ type replayHarness struct {
 }
 
 func newReplayHarness(t *testing.T, messages []replayMessage, fail bool) *replayHarness {
+	return newReplayHarnessWithTopicless(t, messages, fail, false)
+}
+
+func newReplayHarnessWithTopicless(
+	t *testing.T, messages []replayMessage, fail, topicless bool,
+) *replayHarness {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 
@@ -455,10 +475,11 @@ func newReplayHarness(t *testing.T, messages []replayMessage, fail bool) *replay
 	buffer := startReplayBuffer(t, ctx, replayEndpoint)
 	buffer.set(messages...)
 	buffer.fail.Store(fail)
+	buffer.topicless.Store(topicless)
 
 	subManager := kvevents.NewSubscriberManager(pool)
 	require.NoError(t, subManager.EnsureSubscriber(
-		ctx, "test-pod", "10.0.0.1:8000", pubEndpoint, replayEndpoint, "kv@", false))
+		ctx, "test-pod", "10.0.0.1:8000", pubEndpoint, replayEndpoint, "kv@", nil, false))
 	require.Eventually(t, func() bool { return buffer.requests.Load() == 1 },
 		5*time.Second, 50*time.Millisecond, "proactive replay expected")
 
@@ -479,6 +500,24 @@ func newReplayHarness(t *testing.T, messages []replayMessage, fail bool) *replay
 		pub:    pub,
 		topic:  []byte("kv@10.0.0.1:8000@TestModel"),
 	}
+}
+
+func TestZMQSubscriber_TopiclessReplayWaitsForLiveTopic(t *testing.T) {
+	h := newReplayHarnessWithTopicless(t, []replayMessage{
+		{seq: 0, payload: buildDistinctBlockStoredPayload(t, 300)},
+	}, false, true)
+
+	_, err := h.index.GetRequestKey(h.ctx, kvblock.BlockHash(300))
+	require.Error(t, err, "topicless proactive replay must wait for a full live topic")
+
+	h.send(t, 1, buildDistinctBlockStoredPayload(t, 400))
+	require.Eventually(t, func() bool { return h.buffer.requests.Load() == 2 },
+		5*time.Second, 50*time.Millisecond, "live topic should trigger a second replay")
+	require.Eventually(t, func() bool {
+		_, oldErr := h.index.GetRequestKey(h.ctx, kvblock.BlockHash(300))
+		_, liveErr := h.index.GetRequestKey(h.ctx, kvblock.BlockHash(400))
+		return oldErr == nil && liveErr == nil
+	}, 5*time.Second, 50*time.Millisecond)
 }
 
 func (h *replayHarness) send(t *testing.T, seq uint64, payload []byte) {

@@ -31,6 +31,7 @@ import (
 
 	envoy "github.com/llm-d/llm-d-router/pkg/common/envoy"
 	errcommon "github.com/llm-d/llm-d-router/pkg/common/error"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
 	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 	"github.com/llm-d/llm-d-router/pkg/epp/util/request"
 )
@@ -50,6 +51,8 @@ func (s *StreamingServer) HandleRequestHeaders(ctx context.Context, reqCtx *Requ
 	for _, header := range req.RequestHeaders.Headers.Headers {
 		reqCtx.Request.Headers[strings.ToLower(header.Key)] = envoy.GetHeaderValue(header)
 	}
+	delete(reqCtx.Request.Headers, routing.DataParallelRankHeader)
+	delete(reqCtx.Request.Headers, routing.PrefillDataParallelRankHeader)
 
 	reqCtx.ObjectiveKey, _ = metadata.GetLowerCaseHeaderValue(reqCtx.Request.Headers, metadata.ObjectiveKey)
 	reqCtx.TargetModelName, _ = metadata.GetLowerCaseHeaderValue(reqCtx.Request.Headers, metadata.ModelNameRewriteKey)
@@ -63,6 +66,12 @@ func (s *StreamingServer) fallbackToRandomEndpoint(ctx context.Context, reqCtx *
 		return errcommon.Error{Code: errcommon.Internal, Msg: "no pods available in datastore"}
 	}
 	reqCtx.TargetEndpoint = endpoint.GetIPAddress() + ":" + endpoint.GetPort()
+	reqCtx.TargetPod = endpoint
+	delete(reqCtx.Request.Headers, routing.DataParallelRankHeader)
+	if endpoint.DataParallelTarget != nil {
+		reqCtx.Request.Headers[routing.DataParallelRankHeader] =
+			strconv.Itoa(endpoint.DataParallelTarget.Selector)
+	}
 	reqCtx.RequestSize = requestSize
 	reqCtx.reqHeaderResp = s.generateRequestHeaderResponse(ctx, reqCtx)
 
@@ -94,7 +103,8 @@ func (s *StreamingServer) generateRequestHeaderResponse(ctx context.Context, req
 				Response: &extProcPb.CommonResponse{
 					ClearRouteCache: true,
 					HeaderMutation: &extProcPb.HeaderMutation{
-						SetHeaders: s.generateHeaders(ctx, reqCtx),
+						SetHeaders:    s.generateHeaders(ctx, reqCtx),
+						RemoveHeaders: rankHeadersToRemove(reqCtx.Request.Headers),
 					},
 				},
 			},
@@ -149,7 +159,27 @@ func (s *StreamingServer) generateHeaders(ctx context.Context, reqCtx *RequestCo
 			},
 		})
 	}
+	for _, key := range []string{routing.DataParallelRankHeader, routing.PrefillDataParallelRankHeader} {
+		if value := reqCtx.Request.Headers[key]; value != "" {
+			headers = append(headers, &configPb.HeaderValueOption{
+				Header: &configPb.HeaderValue{
+					Key:      key,
+					RawValue: []byte(value),
+				},
+			})
+		}
+	}
 	return headers
+}
+
+func rankHeadersToRemove(headers map[string]string) []string {
+	removed := make([]string, 0, 2)
+	for _, key := range []string{routing.DataParallelRankHeader, routing.PrefillDataParallelRankHeader} {
+		if headers[key] == "" {
+			removed = append(removed, key)
+		}
+	}
+	return removed
 }
 
 func (s *StreamingServer) generateMetadata(endpoint string, endpointScores map[string]float64) *structpb.Struct {

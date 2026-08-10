@@ -59,6 +59,11 @@ func makeEngineKeys(n int, base uint64) []uint64 {
 type sourceEndpointAdapter struct{}
 
 func (a *sourceEndpointAdapter) ParseMessage(msg *RawMessage) (string, string, EventBatch, error) {
+	var dataParallelRank *int
+	if len(msg.Payload) > 1 {
+		rank := int(msg.Payload[1])
+		dataParallelRank = &rank
+	}
 	return "10.0.0.1:8000", "test-model", EventBatch{
 		Events: []GenericEvent{
 			&BlockStoredEvent{
@@ -66,7 +71,29 @@ func (a *sourceEndpointAdapter) ParseMessage(msg *RawMessage) (string, string, E
 				Tokens:      makeTokens(16),
 			},
 		},
+		DataParallelRank: dataParallelRank,
 	}, nil
+}
+
+func TestProcessRawMessage_RejectsMismatchedDataParallelRank(t *testing.T) {
+	ctx := logging.NewTestLoggerIntoContext(context.Background())
+	pool, idx, tokenProcessor := newTestPool(t, 16)
+	pool.adapter = &sourceEndpointAdapter{}
+	expectedRank := 1
+
+	pool.processRawMessage(ctx, &RawMessage{
+		Topic:                    "kv@frontend@test-model",
+		Payload:                  []byte{1, 0},
+		SourceEndpoint:           "default/member-dp-1",
+		ExpectedDataParallelRank: &expectedRank,
+	})
+
+	keys, err := tokenProcessor.TokensToKVBlockKeys(
+		kvblock.EmptyBlockHash, makeTokens(16), "test-model", nil)
+	require.NoError(t, err)
+	result, err := idx.Lookup(ctx, keys, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result[keys[0]])
 }
 
 func (a *sourceEndpointAdapter) ShardingKey(*RawMessage) string {

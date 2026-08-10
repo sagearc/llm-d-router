@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -431,6 +432,7 @@ func (h *Handler) PreRequest(ctx context.Context, request *scheduling.InferenceR
 
 	// Prefill header
 	delete(request.Headers, routing.PrefillEndpointHeader)
+	delete(request.Headers, routing.PrefillDataParallelRankHeader)
 	prefillProfileRunResult := schedulingResult.ProfileResults[h.prefillProfile]
 	switch {
 	case prefillProfileRunResult == nil:
@@ -447,6 +449,10 @@ func (h *Handler) PreRequest(ctx context.Context, request *scheduling.InferenceR
 		targetPod := prefillProfileRunResult.TargetEndpoints[0].GetMetadata()
 		prefillHostPort := net.JoinHostPort(targetPod.Address, targetPod.Port)
 		request.Headers[routing.PrefillEndpointHeader] = prefillHostPort
+		if targetPod.DataParallelTarget != nil {
+			request.Headers[routing.PrefillDataParallelRankHeader] =
+				strconv.Itoa(targetPod.DataParallelTarget.Selector)
+		}
 		span.SetAttributes(
 			attribute.Bool("llm_d.epp.pd.disaggregation_used", true),
 			attribute.String("llm_d.epp.pd.prefill_pod_address", targetPod.Address),

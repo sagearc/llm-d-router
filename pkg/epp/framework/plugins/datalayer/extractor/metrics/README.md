@@ -16,6 +16,7 @@ The Core Metrics Extractor is a data layer plugin responsible for extracting mod
     -   **Waiting Queue Size**: Number of requests waiting in the engine's queue.
     -   **Running Requests Size**: Number of requests currently being processed.
     -   **KV Cache Usage**: Percentage of KV cache currently utilized.
+    -   **KV Cache Capacity**: Maximum number of tokens the cache can hold.
     -   **LoRA Adapters**: Information about active and waiting LoRA adapters.
     -   **Cache Configuration**: Block size and total number of GPU blocks.
 5.  Stores these values as attributes on the endpoint, making them available to scheduling plugins.
@@ -27,6 +28,7 @@ The plugin populates several standard keys on the endpoint:
 -   `WaitingQueueSize` (int)
 -   `RunningRequestsSize` (int)
 -   `KVCacheUsagePercent` (float64)
+-   `KvCacheMaxTokenCapacity` (int)
 -   `MaxActiveModels` (int)
 -   `ActiveModels` (int)
 -   `WaitingModels` (int)
@@ -41,6 +43,12 @@ The plugin config supports:
     but will be removed in a future release.
 -   `defaultEngine`: The engine type to use if the label is missing. Defaults to `vllm`.
 -   `engineConfigs`: A list of engine-specific metric specifications.
+    `dataParallelRankLabel` identifies the label that distinguishes rank-local series for logical
+    endpoints. Built-in SGLang and vLLM mappings use `dp_rank` and `engine`, respectively.
+    `maxTokenCapacitySpec` optionally maps a rank-local token-capacity series.
+    `timestampSpec` optionally maps a Unix-seconds snapshot timestamp. When configured, it becomes
+    the endpoint's `UpdateTime`, so scheduling staleness reflects the engine snapshot rather than
+    the router scrape time.
     Each engine config can also include `customMetrics` entries. Each entry
     maps a scalar metric selector to an endpoint attribute key.
 
@@ -69,9 +77,12 @@ type: core-metrics-extractor
 parameters:
   engineConfigs:
     - name: "my-custom-engine"
+      dataParallelRankLabel: "dp_rank"
       queuedRequestsSpec: "custom_queue_size{status=waiting}"
       runningRequestsSpec: "custom_running_size"
       kvUsageSpec: "custom_cache_utilization"
+      maxTokenCapacitySpec: "custom_max_total_tokens"
+      timestampSpec: "custom_snapshot_timestamp"
       customMetrics:
         - attributeKey: "custom.queue_depth"
           metricSpec: "custom_queue_depth{tier=gold}"
@@ -87,6 +98,9 @@ metadata:
 ```
 
 ```
+
+Rank filtering applies to queue, running-request, KV-usage, and cache-capacity metrics. LoRA and
+custom metric selectors are unchanged unless their own metric specification includes labels.
 
 ## Multi-cluster support
 

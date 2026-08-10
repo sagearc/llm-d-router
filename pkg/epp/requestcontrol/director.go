@@ -25,6 +25,7 @@ import (
 	"math/rand"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -483,6 +484,9 @@ func (d *Director) prepareRequest(ctx context.Context, reqCtx *handlers.RequestC
 		targetMetadatas = append(targetMetadatas, curMetadata)
 		targetEndpoints = append(targetEndpoints, curEndpoint)
 	}
+	if err := validateDataParallelTargetCandidates(targetMetadatas); err != nil {
+		return reqCtx, errcommon.Error{Code: errcommon.Internal, Msg: err.Error()}
+	}
 
 	multiEndpointString := strings.Join(targetEndpoints, ",")
 	logger.V(logutil.VERBOSE).Info("Request handled", "objectiveKey", reqCtx.ObjectiveKey, "incomingModelName", reqCtx.IncomingModelName, "targetModel", reqCtx.TargetModelName, "endpoint", multiEndpointString)
@@ -494,7 +498,11 @@ func (d *Director) prepareRequest(ctx context.Context, reqCtx *handlers.RequestC
 		scores := make(map[string]float64, len(primaryResult.ScoredCandidates))
 		for _, scoredEndpoint := range primaryResult.ScoredCandidates {
 			curMetadata := scoredEndpoint.GetMetadata()
-			scores[net.JoinHostPort(curMetadata.GetIPAddress(), curMetadata.GetPort())] = scoredEndpoint.Score
+			identity := net.JoinHostPort(curMetadata.GetIPAddress(), curMetadata.GetPort())
+			if curMetadata.DataParallelTarget != nil {
+				identity = curMetadata.GetCacheIdentity()
+			}
+			scores[identity] = scoredEndpoint.Score
 		}
 		reqCtx.TargetEndpointScores = scores
 	}
@@ -516,8 +524,53 @@ func (d *Director) prepareRequest(ctx context.Context, reqCtx *handlers.RequestC
 		}
 		return reqCtx, errcommon.Error{Code: errcommon.Internal, Msg: err.Error()}
 	}
+	setDataParallelRankHeader(reqCtx.SchedulingRequest, reqCtx.TargetPod)
+	recordDataParallelTarget(ctx, reqCtx.TargetPod)
 
 	return reqCtx, nil
+}
+
+func setDataParallelRankHeader(request *fwksched.InferenceRequest, metadata *fwkdl.EndpointMetadata) {
+	if request == nil {
+		return
+	}
+	if request.Headers == nil {
+		request.Headers = make(map[string]string)
+	}
+	delete(request.Headers, routing.DataParallelRankHeader)
+	if metadata != nil && metadata.DataParallelTarget != nil {
+		request.Headers[routing.DataParallelRankHeader] = strconv.Itoa(metadata.DataParallelTarget.Selector)
+	}
+}
+
+func validateDataParallelTargetCandidates(targets []*fwkdl.EndpointMetadata) error {
+	if len(targets) == 0 {
+		return errors.New("primary scheduling result must contain at least one target endpoint")
+	}
+
+	firstTarget := targets[0].DataParallelTarget
+	for _, target := range targets[1:] {
+		candidateTarget := target.DataParallelTarget
+		switch {
+		case firstTarget == nil && candidateTarget == nil:
+			continue
+		case firstTarget == nil || candidateTarget == nil:
+			return errors.New("target endpoints mix data-parallel selector and physical routing contracts")
+		case firstTarget.Selector != candidateTarget.Selector:
+			return fmt.Errorf("target endpoints require different data-parallel selectors %d and %d", firstTarget.Selector, candidateTarget.Selector)
+		}
+	}
+	return nil
+}
+
+func recordDataParallelTarget(ctx context.Context, metadata *fwkdl.EndpointMetadata) {
+	if metadata == nil || metadata.DataParallelTarget == nil {
+		return
+	}
+	trace.SpanFromContext(ctx).SetAttributes(
+		attribute.Int("llm_d.epp.target.dp_global_rank", metadata.DataParallelTarget.GlobalRank),
+		attribute.Int("llm_d.epp.target.dp_selector", metadata.DataParallelTarget.Selector),
+	)
 }
 
 func (d *Director) toSchedulerEndpoints(endpoints []fwkdl.Endpoint) []fwksched.Endpoint {

@@ -44,6 +44,8 @@ type metricsDatasourceParams struct {
 	Scheme string `json:"scheme"`
 	// Path defines the URL path used in metrics retrieval (e.g., "/metrics").
 	Path string `json:"path"`
+	// Query defines URL query parameters used in metrics retrieval.
+	Query map[string]string `json:"query,omitempty"`
 	// Port, when set, overrides the endpoint's inference port for metrics retrieval.
 	// Use when the model server exposes metrics on a port other than the InferencePool target port.
 	// The override applies to every endpoint of the source. Do not set it on pools with
@@ -92,6 +94,9 @@ func MetricsDataSourceFactory(name string, parameters *json.Decoder, handle fwkp
 	}
 
 	opts := []http.Option{intervalOpt}
+	if len(cfg.Query) > 0 {
+		opts = append(opts, http.WithQuery(cfg.Query))
+	}
 	if cfg.Port != nil {
 		opts = append(opts, http.WithPortOverride(*cfg.Port))
 	}

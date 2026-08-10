@@ -255,6 +255,19 @@ func TestGetEndpoint_PortOverride(t *testing.T) {
 	}
 }
 
+func TestGetEndpoint_Query(t *testing.T) {
+	parser := func(r io.Reader) (int, error) { return 0, nil }
+	query := map[string]string{"format": "prometheus", "include": "core"}
+	s, err := NewHTTPDataSource("http", "/v1/loads", TLSOptions{SkipVerify: true}, "test", "test", parser,
+		WithQuery(query))
+	require.NoError(t, err)
+
+	query["format"] = "json"
+	got := s.getEndpoint(&fwkdl.EndpointMetadata{MetricsHost: "10.0.0.1:8000"})
+	assert.Equal(t, "/v1/loads", got.Path)
+	assert.Equal(t, "format=prometheus&include=core", got.RawQuery)
+}
+
 func TestNewHTTPDataSource_UseNodeAddressWithoutPortOverride(t *testing.T) {
 	parser := func(r io.Reader) (int, error) { return 0, nil }
 	_, err := NewHTTPDataSource("http", "/metrics", TLSOptions{SkipVerify: true}, "test", "test", parser,

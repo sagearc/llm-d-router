@@ -121,7 +121,7 @@ type StreamingServer struct {
 type RequestContext struct {
 	TargetPod      *fwkdl.EndpointMetadata
 	TargetEndpoint string
-	// TargetEndpointScores maps endpoint address to the scheduler's score for it, covering
+	// TargetEndpointScores maps endpoint cache identity to the scheduler's score for it, covering
 	// every endpoint the primary profile scored rather than only those in TargetEndpoint.
 	// Nil when the primary profile ran no scorers.
 	TargetEndpointScores       map[string]float64

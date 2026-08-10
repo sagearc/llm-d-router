@@ -19,11 +19,33 @@ package preciseprefixcache
 import (
 	"testing"
 
+	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/scheduling"
 	"github.com/llm-d/llm-d-router/pkg/kvcache/kvblock"
 	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/types"
 
 	attrprefix "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/datalayer/attribute/prefix"
 )
+
+func TestExtractEndpointSetKeepsLogicalRanksDistinct(t *testing.T) {
+	endpoints := []scheduling.Endpoint{
+		scheduling.NewEndpoint(&fwkdl.EndpointMetadata{
+			ID:                 types.NamespacedName{Namespace: "default", Name: "member-a-dp-0"},
+			Address:            "10.0.0.1",
+			Port:               "8000",
+			DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 0, Selector: 0},
+		}, nil, nil),
+		scheduling.NewEndpoint(&fwkdl.EndpointMetadata{
+			ID:                 types.NamespacedName{Namespace: "default", Name: "member-a-dp-1"},
+			Address:            "10.0.0.1",
+			Port:               "8000",
+			DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 1, Selector: 1},
+		}, nil, nil),
+	}
+
+	assert.ElementsMatch(t, []string{"default/member-a-dp-0", "default/member-a-dp-1"}, extractEndpointSet(endpoints).UnsortedList())
+}
 
 func TestMatchedBlockCount(t *testing.T) {
 	const (

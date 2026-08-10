@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -101,9 +102,22 @@ func (ext *Extractor) Extract(ctx context.Context, in fwkdl.PollInput[sourcemetr
 	current := ep.GetMetrics()
 	clone := current.Clone()
 	updated := false
+	rankLabels := dataParallelMetricLabels(mapping, ep.GetMetadata())
+	updateTime := time.Now()
+	if spec := mapping.Timestamp; spec != nil {
+		metric, err := spec.getLatestMetricForLabels(families, rankLabels)
+		if err != nil {
+			return fmt.Errorf("extracting metrics timestamp: %w", err)
+		}
+		seconds := extractValue(metric)
+		if seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+			return fmt.Errorf("invalid metrics timestamp %v", seconds)
+		}
+		updateTime = time.Unix(0, int64(seconds*float64(time.Second)))
+	}
 
 	if spec := mapping.TotalQueuedRequests; spec != nil { // extract queued requests
-		if metric, err := spec.getLatestMetric(families); err != nil {
+		if metric, err := spec.getLatestMetricForLabels(families, rankLabels); err != nil {
 			errs = append(errs, err)
 		} else {
 			clone.WaitingQueueSize = int(extractValue(metric))
@@ -112,7 +126,7 @@ func (ext *Extractor) Extract(ctx context.Context, in fwkdl.PollInput[sourcemetr
 	}
 
 	if spec := mapping.TotalRunningRequests; spec != nil { // extract running requests
-		if metric, err := spec.getLatestMetric(families); err != nil {
+		if metric, err := spec.getLatestMetricForLabels(families, rankLabels); err != nil {
 			errs = append(errs, err)
 		} else {
 			clone.RunningRequestsSize = int(extractValue(metric))
@@ -121,10 +135,19 @@ func (ext *Extractor) Extract(ctx context.Context, in fwkdl.PollInput[sourcemetr
 	}
 
 	if spec := mapping.KVCacheUtilization; spec != nil { // extract KV cache usage
-		if metric, err := spec.getLatestMetric(families); err != nil {
+		if metric, err := spec.getLatestMetricForLabels(families, rankLabels); err != nil {
 			errs = append(errs, err)
 		} else {
 			clone.KVCacheUsagePercent = extractValue(metric)
+			updated = true
+		}
+	}
+
+	if spec := mapping.MaxTokenCapacity; spec != nil {
+		if metric, err := spec.getLatestMetricForLabels(families, rankLabels); err != nil {
+			errs = append(errs, err)
+		} else {
+			clone.KvCacheMaxTokenCapacity = int(extractValue(metric))
 			updated = true
 		}
 	}
@@ -184,7 +207,7 @@ func (ext *Extractor) Extract(ctx context.Context, in fwkdl.PollInput[sourcemetr
 
 	logger := log.FromContext(ctx).WithValues("endpoint", ep.GetMetadata().ID)
 	if updated {
-		clone.UpdateTime = time.Now()
+		clone.UpdateTime = updateTime
 		logger.V(logutil.TRACE).Info("Refreshed metrics",
 			"metrics", mapping.MetricNames(),
 			"updated", clone,
@@ -196,6 +219,15 @@ func (ext *Extractor) Extract(ctx context.Context, in fwkdl.PollInput[sourcemetr
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+func dataParallelMetricLabels(mapping *Mapping, metadata *fwkdl.EndpointMetadata) map[string]string {
+	if mapping == nil || mapping.DataParallelRankLabel == "" || metadata == nil || metadata.DataParallelTarget == nil {
+		return nil
+	}
+	return map[string]string{
+		mapping.DataParallelRankLabel: strconv.Itoa(metadata.DataParallelTarget.GlobalRank),
+	}
 }
 
 // getEngineTypeFromEndpoint extracts the engine type from endpoint metadata labels.

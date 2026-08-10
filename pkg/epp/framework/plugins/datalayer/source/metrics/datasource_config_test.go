@@ -43,6 +43,7 @@ func TestDataSourceConfigParams_UsesConfig(t *testing.T) {
 	parameters := metricsDatasourceParams{
 		Scheme:             "https",
 		Path:               "/custom-metrics",
+		Query:              map[string]string{"format": "prometheus", "include": "core"},
 		InsecureSkipVerify: false,
 	}
 
@@ -58,6 +59,7 @@ func TestDataSourceConfigParams_UsesConfig(t *testing.T) {
 	expected := &metricsDatasourceParams{
 		Scheme:             "https",
 		Path:               "/custom-metrics",
+		Query:              map[string]string{"format": "prometheus", "include": "core"},
 		InsecureSkipVerify: false,
 	}
 

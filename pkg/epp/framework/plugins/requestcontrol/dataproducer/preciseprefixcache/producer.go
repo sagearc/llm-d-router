@@ -76,6 +76,7 @@ type subscriberManager interface {
 	EnsureSubscriber(
 		ctx context.Context,
 		podIdentifier, sourceEndpoint, endpoint, replayEndpoint, topicFilter string,
+		expectedDataParallelRank *int,
 		remoteSocket bool,
 	) error
 	RemoveSubscriber(ctx context.Context, podIdentifier string)
@@ -192,7 +193,7 @@ func New(ctx context.Context, name string, config PluginConfig) (*Producer, erro
 	subscribersManager := kvevents.NewSubscriberManager(pool)
 	if config.KVEventsConfig.ZMQEndpoint != "" {
 		if err := subscribersManager.EnsureSubscriber(ctx, "local-subscriber", "",
-			config.KVEventsConfig.ZMQEndpoint, "", config.KVEventsConfig.TopicFilter, false); err != nil {
+			config.KVEventsConfig.ZMQEndpoint, "", config.KVEventsConfig.TopicFilter, nil, false); err != nil {
 			return nil, fmt.Errorf("failed to create local subscriber for global socket mode: %w", err)
 		}
 	}
@@ -376,7 +377,7 @@ func (p *Producer) produceFromBlockKeys(ctx context.Context, span trace.Span,
 		if md == nil {
 			continue
 		}
-		addr := fmt.Sprintf("%s:%s", md.Address, md.Port)
+		addr := md.GetCacheIdentity()
 		matchLen := int(aggregatedScores[addr])
 		if matchLen > maxMatch {
 			maxMatch = matchLen

@@ -40,6 +40,42 @@ var _ = Describe("SGLang Connector", func() {
 		testInfo = sidecarConnectionTestSetup(KVConnectorSGLang)
 	})
 
+	It("pins independent prefill and decode data parallel ranks", func() {
+		prefillReq, err := http.NewRequest(http.MethodPost, "http://prefill/v1/chat/completions", nil)
+		Expect(err).ToNot(HaveOccurred())
+		decodeReq, err := http.NewRequest(http.MethodPost, "http://decode/v1/chat/completions", nil)
+		Expect(err).ToNot(HaveOccurred())
+		for _, req := range []*http.Request{prefillReq, decodeReq} {
+			req.Header.Set(routing.DataParallelRankHeader, "6")
+			req.Header.Set(routing.PrefillDataParallelRankHeader, "2")
+		}
+
+		Expect(pinSGLangDataParallelRanks(prefillReq, decodeReq)).To(Succeed())
+		Expect(prefillReq.Header.Get(routing.DataParallelRankHeader)).To(Equal("2"))
+		Expect(decodeReq.Header.Get(routing.DataParallelRankHeader)).To(Equal("6"))
+		Expect(prefillReq.Header.Get(routing.PrefillDataParallelRankHeader)).To(BeEmpty())
+		Expect(decodeReq.Header.Get(routing.PrefillDataParallelRankHeader)).To(BeEmpty())
+		Expect(prefillReq.Header.Get(sglangDisaggPrefillDataParallelRankHeader)).To(Equal("2"))
+		Expect(decodeReq.Header.Get(sglangDisaggPrefillDataParallelRankHeader)).To(Equal("2"))
+	})
+
+	It("allows SGLang to balance a non-logical prefill", func() {
+		prefillReq, err := http.NewRequest(http.MethodPost, "http://prefill/v1/chat/completions", nil)
+		Expect(err).ToNot(HaveOccurred())
+		decodeReq, err := http.NewRequest(http.MethodPost, "http://decode/v1/chat/completions", nil)
+		Expect(err).ToNot(HaveOccurred())
+		prefillReq.Header.Set(routing.DataParallelRankHeader, "6")
+		decodeReq.Header.Set(routing.DataParallelRankHeader, "6")
+		prefillReq.Header.Set(sglangDisaggPrefillDataParallelRankHeader, "98")
+		decodeReq.Header.Set(sglangDisaggPrefillDataParallelRankHeader, "99")
+
+		Expect(pinSGLangDataParallelRanks(prefillReq, decodeReq)).To(Succeed())
+		Expect(prefillReq.Header.Get(routing.DataParallelRankHeader)).To(BeEmpty())
+		Expect(decodeReq.Header.Get(routing.DataParallelRankHeader)).To(Equal("6"))
+		Expect(prefillReq.Header.Get(sglangDisaggPrefillDataParallelRankHeader)).To(BeEmpty())
+		Expect(decodeReq.Header.Get(sglangDisaggPrefillDataParallelRankHeader)).To(BeEmpty())
+	})
+
 	It("should successfully send concurrent requests to prefill and decode with bootstrap info", func() {
 		By("starting the proxy")
 		go func() {

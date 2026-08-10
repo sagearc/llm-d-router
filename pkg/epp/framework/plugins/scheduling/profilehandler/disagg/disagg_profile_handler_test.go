@@ -1347,9 +1347,10 @@ func TestBothProfileAndHeadersHandlerPreRequest(t *testing.T) {
 	podPort := "8080"
 	ep := scheduling.NewEndpoint(
 		&fwkdl.EndpointMetadata{
-			ID:      k8stypes.NamespacedName{Namespace: "default", Name: "prefill-pod"},
-			Address: podAddr,
-			Port:    podPort,
+			ID:                 k8stypes.NamespacedName{Namespace: "default", Name: "prefill-pod"},
+			Address:            podAddr,
+			Port:               podPort,
+			DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 5, Selector: 5},
 		},
 		&fwkdl.Metrics{},
 		nil,
@@ -1372,6 +1373,7 @@ func TestBothProfileAndHeadersHandlerPreRequest(t *testing.T) {
 	expected := net.JoinHostPort(podAddr, podPort)
 	assert.Equal(t, expected, request.Headers[routing.PrefillEndpointHeader],
 		"both handlers set the same prefill header — redundant but no conflict")
+	assert.Equal(t, "5", request.Headers[routing.PrefillDataParallelRankHeader])
 }
 
 func TestHandler_PreRequest_EncodeMultipleEndpoints(t *testing.T) {

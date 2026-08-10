@@ -27,17 +27,10 @@ const noGroupIdx = -1
 
 // noDataParallelRank is the sentinel data-parallel rank used in a dedup scope.
 //
-// On current main the index identity (kvblock.PodEntry) is pod-level and does
-// NOT distinguish data-parallel ranks, so every scope uses this sentinel and
-// reference counts aggregate across ranks — which is exactly what the pod-level
-// index requires (a block is still resident on the pod until every rank has
-// removed it). The value matches PR #370's NoDataParallelRank (-1) convention.
-//
-// TODO(#370): once DataParallelRank is propagated onto EventBatch and into
-// PodEntry, source the rank from the event in pool.go so the dedup scope
-// becomes DP-aware in lockstep with the (then DP-aware) index identity. No
-// change to this file is required — only the scope construction at the call
-// sites.
+// The index identity (kvblock.PodEntry) does not have a separate data-parallel
+// rank field, so every scope uses this sentinel. Shared-front-end logical ranks
+// remain isolated because each rank has its own podIdentifier. The value matches
+// PR #370's NoDataParallelRank (-1) convention.
 const noDataParallelRank = -1
 
 // groupIdxOrNoGroup maps an optional event group index to the dedup-scope int,

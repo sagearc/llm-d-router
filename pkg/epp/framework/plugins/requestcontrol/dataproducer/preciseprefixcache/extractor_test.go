@@ -222,6 +222,65 @@ func TestProducer_EnsureSubscriber_PassesServingEndpoint(t *testing.T) {
 	assert.Equal(t, []string{"tcp://10.0.0.1:5560"}, subscribers.endpoints)
 }
 
+func TestProducer_EnsureSubscriber_UsesLogicalRankIdentity(t *testing.T) {
+	cfg := kvevents.DefaultConfig()
+	cfg.DiscoverPods = true
+	cfg.PodDiscoveryConfig.SocketPort = 5557
+
+	subscribers := &fakeSubscriberManager{}
+	p := &Producer{
+		typedName:          plugin.TypedName{Type: PluginType, Name: PluginType},
+		subscribersManager: subscribers,
+		kvEventsConfig:     cfg,
+		subscriberCtx:      context.Background(),
+	}
+	require.NoError(t, p.ensureSubscriber(context.Background(), &fwkdl.EndpointMetadata{
+		ID:          k8stypes.NamespacedName{Namespace: "ns", Name: "member-dp-3"},
+		Address:     "10.0.0.1",
+		KVEventHost: "10.0.0.2",
+		Port:        "8000",
+		DataParallelTarget: &fwkdl.DataParallelTarget{
+			GlobalRank: 3,
+			Selector:   3,
+		},
+	}))
+
+	assert.Equal(t, []string{"ns/member-dp-3"}, subscribers.sourceEndpoints)
+	assert.Equal(t, []string{"tcp://10.0.0.2:5560"}, subscribers.endpoints)
+	require.Len(t, subscribers.expectedRanks, 1)
+	require.NotNil(t, subscribers.expectedRanks[0])
+	assert.Equal(t, 3, *subscribers.expectedRanks[0])
+}
+
+func TestProducer_ExtractEndpoint_ClearsOnlyLogicalRank(t *testing.T) {
+	var cleared string
+	cfg := kvevents.DefaultConfig()
+	cfg.DiscoverPods = true
+	p := &Producer{
+		typedName:          plugin.TypedName{Type: PluginType, Name: PluginType},
+		subscribersManager: &fakeSubscriberManager{},
+		kvEventsConfig:     cfg,
+		kvCacheIndexer: &fakeKVCacheIndexer{index: &fakeKVBlockIndex{
+			clearFn: func(_ context.Context, podIdentifier string) error {
+				cleared = podIdentifier
+				return nil
+			},
+		}},
+	}
+	endpoint := fwkdl.NewEndpoint(&fwkdl.EndpointMetadata{
+		ID:                 k8stypes.NamespacedName{Namespace: "ns", Name: "member-dp-3"},
+		Address:            "10.0.0.1",
+		Port:               "8000",
+		DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 3, Selector: 3},
+	}, nil)
+
+	require.NoError(t, p.Extract(context.Background(), fwkdl.EndpointEvent{
+		Type:     fwkdl.EventDelete,
+		Endpoint: endpoint,
+	}))
+	assert.Equal(t, "ns/member-dp-3", cleared)
+}
+
 // RankIndex=0 must dial the base SocketPort unchanged.
 func TestProducer_ExtractEndpoint_SingleRankUsesBaseSocketPort(t *testing.T) {
 	ctx := discardCtx(t)

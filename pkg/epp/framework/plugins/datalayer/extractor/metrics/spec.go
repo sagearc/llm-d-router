@@ -101,6 +101,13 @@ func extractFamily(spec *Spec, families sourcemetrics.PrometheusMetricMap) (*dto
 
 // getLatestMetric retrieves the latest metric based on Spec.
 func (spec *Spec) getLatestMetric(families sourcemetrics.PrometheusMetricMap) (*dto.Metric, error) {
+	return spec.getLatestMetricForLabels(families, nil)
+}
+
+func (spec *Spec) getLatestMetricForLabels(
+	families sourcemetrics.PrometheusMetricMap,
+	additionalLabels map[string]string,
+) (*dto.Metric, error) {
 	family, err := extractFamily(spec, families)
 	if err != nil {
 		return nil, err
@@ -110,7 +117,7 @@ func (spec *Spec) getLatestMetric(families sourcemetrics.PrometheusMetricMap) (*
 	var recent int64 = -1
 
 	for _, metric := range family.GetMetric() {
-		if spec.labelsMatch(metric.GetLabel()) {
+		if spec.labelsMatch(metric.GetLabel(), additionalLabels) {
 			ts := metric.GetTimestampMs()
 			if ts > recent {
 				recent = ts
@@ -127,8 +134,8 @@ func (spec *Spec) getLatestMetric(families sourcemetrics.PrometheusMetricMap) (*
 }
 
 // labelsMatch checks if metric labels match the specification labels.
-func (spec *Spec) labelsMatch(metricLabels []*dto.LabelPair) bool {
-	if len(spec.Labels) == 0 {
+func (spec *Spec) labelsMatch(metricLabels []*dto.LabelPair, additionalLabels map[string]string) bool {
+	if len(spec.Labels) == 0 && len(additionalLabels) == 0 {
 		return true // no label requirements
 	}
 
@@ -139,6 +146,11 @@ func (spec *Spec) labelsMatch(metricLabels []*dto.LabelPair) bool {
 
 	// check if all spec labels match
 	for name, value := range spec.Labels {
+		if metricValue, exists := metricLabelMap[name]; !exists || metricValue != value {
+			return false
+		}
+	}
+	for name, value := range additionalLabels {
 		if metricValue, exists := metricLabelMap[name]; !exists || metricValue != value {
 			return false
 		}

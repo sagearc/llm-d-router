@@ -37,12 +37,18 @@ type (
 	engineConfigParams struct {
 		// Name is the engine type identifier.
 		Name string `json:"name"`
+		// DataParallelRankLabel identifies rank-local metric series.
+		DataParallelRankLabel string `json:"dataParallelRankLabel,omitempty"`
 		// QueuedRequestsSpec defines the metric specification string for retrieving queued request count.
 		QueuedRequestsSpec string `json:"queuedRequestsSpec"`
 		// RunningRequestsSpec defines the metric specification string for retrieving running requests count.
 		RunningRequestsSpec string `json:"runningRequestsSpec"`
 		// KVUsageSpec defines the metric specification string for retrieving KV cache usage.
 		KVUsageSpec string `json:"kvUsageSpec"`
+		// MaxTokenCapacitySpec defines the maximum number of KV-cache tokens.
+		MaxTokenCapacitySpec string `json:"maxTokenCapacitySpec,omitempty"`
+		// TimestampSpec defines the engine snapshot timestamp in Unix seconds.
+		TimestampSpec string `json:"timestampSpec,omitempty"`
 		// LoRASpec defines the metric specification string for retrieving LoRA availability.
 		LoRASpec string `json:"loraSpec"`
 		// CacheInfoSpec defines the metric specification string for retrieving KV cache configuration
@@ -88,15 +94,17 @@ type (
 // Default engine configurations for vLLM, SGLang, trtllm-serve, triton-tensorrt-llm, and triton.
 var defaultEngineConfigs = []engineConfigParams{
 	{
-		Name:                "vllm",
-		QueuedRequestsSpec:  "vllm:num_requests_waiting",
-		RunningRequestsSpec: "vllm:num_requests_running",
-		KVUsageSpec:         "vllm:kv_cache_usage_perc",
-		LoRASpec:            "vllm:lora_requests_info",
-		CacheInfoSpec:       "vllm:cache_config_info",
+		Name:                  "vllm",
+		DataParallelRankLabel: "engine",
+		QueuedRequestsSpec:    "vllm:num_requests_waiting",
+		RunningRequestsSpec:   "vllm:num_requests_running",
+		KVUsageSpec:           "vllm:kv_cache_usage_perc",
+		LoRASpec:              "vllm:lora_requests_info",
+		CacheInfoSpec:         "vllm:cache_config_info",
 	},
 	{
 		Name:                    "sglang",
+		DataParallelRankLabel:   "dp_rank",
 		QueuedRequestsSpec:      "sglang:num_queue_reqs",
 		RunningRequestsSpec:     "sglang:num_running_reqs",
 		KVUsageSpec:             "sglang:token_usage",
@@ -212,16 +220,19 @@ func newCoreMetricsExtractorPlugin(ctx context.Context, name string, params *mod
 		}
 
 		mapping, err := NewMappingFromConfig(MappingConfig{
-			Queue:               engineConfig.QueuedRequestsSpec,
-			Running:             engineConfig.RunningRequestsSpec,
-			KVUsage:             engineConfig.KVUsageSpec,
-			Lora:                engineConfig.LoRASpec,
-			CacheInfo:           engineConfig.CacheInfoSpec,
-			CacheBlockSizeLabel: engineConfig.CacheBlockSizeLabelName,
-			CacheNumBlocksLabel: engineConfig.CacheNumBlocksLabelName,
-			CacheBlockSize:      engineConfig.CacheBlockSizeSpec,
-			CacheNumBlocks:      engineConfig.CacheNumBlocksSpec,
-			CustomMetrics:       customMetrics,
+			DataParallelRankLabel: engineConfig.DataParallelRankLabel,
+			Queue:                 engineConfig.QueuedRequestsSpec,
+			Running:               engineConfig.RunningRequestsSpec,
+			KVUsage:               engineConfig.KVUsageSpec,
+			MaxTokenCapacity:      engineConfig.MaxTokenCapacitySpec,
+			Timestamp:             engineConfig.TimestampSpec,
+			Lora:                  engineConfig.LoRASpec,
+			CacheInfo:             engineConfig.CacheInfoSpec,
+			CacheBlockSizeLabel:   engineConfig.CacheBlockSizeLabelName,
+			CacheNumBlocksLabel:   engineConfig.CacheNumBlocksLabelName,
+			CacheBlockSize:        engineConfig.CacheBlockSizeSpec,
+			CacheNumBlocks:        engineConfig.CacheNumBlocksSpec,
+			CustomMetrics:         customMetrics,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create mapping for engine %q: %w", engineConfig.Name, err)

@@ -52,8 +52,8 @@ func (p *Producer) Extract(ctx context.Context, event fwkdl.EndpointEvent) error
 		logger.V(logging.DEBUG).Info("Adding subscriber", "endpoint", endpointKey)
 	case fwkdl.EventDelete:
 		p.subscribersManager.RemoveSubscriber(ctx, endpointKey)
-		if meta.Address != "" {
-			if err := p.kvCacheIndexer.KVBlockIndex().Clear(ctx, fmt.Sprintf("%s:%s", meta.Address, meta.Port)); err != nil {
+		if cacheIdentity := meta.GetCacheIdentity(); cacheIdentity != "" {
+			if err := p.kvCacheIndexer.KVBlockIndex().Clear(ctx, cacheIdentity); err != nil {
 				logger.Error(err, "Failed to clear index entries for removed endpoint",
 					"endpoint", endpointKey, "address", meta.Address, "port", meta.Port)
 			}
@@ -64,26 +64,33 @@ func (p *Producer) Extract(ctx context.Context, event fwkdl.EndpointEvent) error
 }
 
 // ensureSubscriber idempotently installs a KV-events subscriber for the given
-// endpoint, dialing SocketPort + RankIndex to match standard inference-engine port offsetting
-// (one ZMQ PUB socket per DP rank on the same pod IP).
+// endpoint, dialing the publisher host and rank-specific port associated with it.
 func (p *Producer) ensureSubscriber(ctx context.Context, meta *fwkdl.EndpointMetadata) error {
-	if meta == nil || meta.Address == "" {
+	if meta == nil || meta.GetKVEventHost() == "" {
 		return nil
 	}
 	endpointKey := meta.ID.String()
-	port := p.kvEventsConfig.PodDiscoveryConfig.SocketPort + meta.GetRankIndex()
-	zmqEndpoint := fmt.Sprintf("tcp://%s:%d", meta.Address, port)
+	eventHost := meta.GetKVEventHost()
+	portOffset := meta.GetKVEventPortOffset()
+	port := p.kvEventsConfig.PodDiscoveryConfig.SocketPort + portOffset
+	zmqEndpoint := fmt.Sprintf("tcp://%s:%d", eventHost, port)
 	replayEndpoint := ""
 	if replayPort := p.kvEventsConfig.PodDiscoveryConfig.EffectiveReplayPort(); replayPort > 0 {
-		replayEndpoint = fmt.Sprintf("tcp://%s:%d", meta.Address, replayPort+meta.GetRankIndex())
+		replayEndpoint = fmt.Sprintf("tcp://%s:%d", eventHost, replayPort+portOffset)
 	}
-	sourceEndpoint := fmt.Sprintf("%s:%s", meta.Address, meta.Port)
+	sourceEndpoint := meta.GetCacheIdentity()
+	var expectedDataParallelRank *int
+	if meta.DataParallelTarget != nil {
+		rank := meta.DataParallelTarget.GlobalRank
+		expectedDataParallelRank = &rank
+	}
 
 	logger := log.FromContext(ctx).WithName(p.typedName.String())
 	// subscriberCtx is plugin-lifetime; caller ctx would tear subscribers
 	// down on request completion.
 	if err := p.subscribersManager.EnsureSubscriber(p.subscriberCtx, endpointKey,
-		sourceEndpoint, zmqEndpoint, replayEndpoint, p.kvEventsConfig.TopicFilter, true); err != nil {
+		sourceEndpoint, zmqEndpoint, replayEndpoint, p.kvEventsConfig.TopicFilter,
+		expectedDataParallelRank, true); err != nil {
 		logger.Error(err, "Failed to ensure KV-events subscriber for endpoint",
 			"endpoint", endpointKey, "address", meta.Address)
 		return fmt.Errorf("ensure subscriber for %s: %w", endpointKey, err)

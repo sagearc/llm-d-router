@@ -64,7 +64,7 @@ func (spec *LoRASpec) getLatestMetric(families sourcemetrics.PrometheusMetricMap
 	var recent float64 = -1
 
 	for _, metric := range family.GetMetric() {
-		if spec.labelsMatch(metric.GetLabel()) {
+		if spec.labelsMatch(metric.GetLabel(), nil) {
 			value := extractValue(metric) // metric value is its creation timestamp
 			if value > recent {
 				recent = value

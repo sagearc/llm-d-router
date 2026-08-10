@@ -12,6 +12,7 @@
   - [`SchedulingProfiles` Configuration](#schedulingprofiles-configuration)
   - [Available plugins](#available-plugins)
 - [Metric Scraping and the Data Layer](#metric-scraping-and-the-data-layer)
+- [Shared SGLang Data Parallel Frontends](#shared-sglang-data-parallel-frontends)
 - [Disaggregated Encode/Prefill/Decode (E/P/D)](#disaggregated-encodeprefilldecode-epd)
 - [InferencePool & InferenceModel Design](#inferencepool--inferencemodel-design)
   - [Current Assumptions](#current-assumptions)
@@ -248,6 +249,65 @@ when omitted, the source runs on every base tick. The runtime converts each sour
 interval to base-tick multiples and schedules dispatches accordingly.
 
 See the upstream [Data Layer](https://github.com/llm-d/llm-d/blob/main/docs/architecture/core/router/epp/datalayer.md) doc for the canonical model.
+
+---
+
+## Shared SGLang Data Parallel Frontends
+
+SGLang can expose several data parallel schedulers through one HTTP frontend. The router models
+each scheduler as a logical endpoint, schedules it independently, and sends the selected global
+rank in `X-Data-Parallel-Rank`. No per-rank inference ports are required.
+
+Opt every selected group member in with the following label:
+
+```yaml
+llm-d.ai/data-parallel-ranks-per-member: "2"
+```
+
+`llm-d.ai/data-parallel-rank-start` may override a member's first global rank. Without an override,
+an LWS member starts at `worker-index * ranks-per-member`. Non-LWS discovery supports only one pod
+and starts at rank zero.
+
+For LWS groups, the router uses the `leaderworkerset.sigs.k8s.io/worker-index` label and the
+`leaderworkerset.sigs.k8s.io/leader-name` and `leaderworkerset.sigs.k8s.io/size` annotations. The
+InferencePool selector must include the leader and every worker. A group is advertised only when
+all expected members and the leader are Ready, worker indexes and rank ranges are contiguous from
+zero, and the leader exposes exactly one active target port. The logical endpoints retain member
+labels and node addresses, but all use the leader's HTTP address and metrics host.
+
+For load-aware scheduling, scrape SGLang's consolidated load snapshots from
+`/v1/loads?format=prometheus&include=core`. This endpoint exposes queue, running-request, token-use,
+capacity, and snapshot timestamp series for every global `dp_rank`, including schedulers on remote
+members. Configure the query separately from the path and map the per-rank timestamp so stale engine
+snapshots are not refreshed merely because the router completed another scrape:
+
+```yaml
+dataLayer:
+  sources:
+  - type: metrics-data-source
+    parameters:
+      path: /v1/loads
+      interval: 1s
+      query:
+        format: prometheus
+        include: core
+  extractors:
+  - type: core-metrics-extractor
+    parameters:
+      engineConfigs:
+      - name: sglang
+        dataParallelRankLabel: dp_rank
+        queuedRequestsSpec: sglang_num_waiting_reqs
+        runningRequestsSpec: sglang_num_running_reqs
+        kvUsageSpec: sglang_token_usage
+        maxTokenCapacitySpec: sglang_max_total_num_tokens
+        timestampSpec: sglang_timestamp
+```
+
+`--enable-metrics-for-all-schedulers` is not required for this routing source. It remains useful for
+ordinary SGLang observability through `/metrics`. Precise prefix-cache routing additionally requires
+each member to publish rank-local KV events at the configured base publisher and replay ports plus
+the global rank.
 
 ---
 

@@ -51,7 +51,7 @@ func TestVLLMParseMessage_Valid(t *testing.T) {
 	batch := []any{
 		1234567890.0,
 		[]any{blockStoredEvent},
-		nil,
+		3,
 	}
 	payload, err := msgpack.Marshal(batch)
 	require.NoError(t, err)
@@ -67,6 +67,8 @@ func TestVLLMParseMessage_Valid(t *testing.T) {
 	assert.Equal(t, "pod-1", podID)
 	assert.Equal(t, "llama-2-7b", modelName)
 	assert.Len(t, eventBatch.Events, 1)
+	require.NotNil(t, eventBatch.DataParallelRank)
+	assert.Equal(t, 3, *eventBatch.DataParallelRank)
 
 	blockStored, ok := eventBatch.Events[0].(*kvevents.BlockStoredEvent)
 	require.True(t, ok)

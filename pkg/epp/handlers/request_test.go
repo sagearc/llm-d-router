@@ -27,7 +27,9 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/protobuf/types/known/structpb"
+	"k8s.io/utils/ptr"
 
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 )
@@ -129,6 +131,17 @@ func TestHandleRequestHeaders(t *testing.T) {
 			wantObjective: "new-objective",
 			wantTarget:    "new-model",
 		},
+		{
+			name: "Strips client-provided data parallel rank headers",
+			headers: []*configPb.HeaderValue{
+				{Key: "X-Data-Parallel-Rank", Value: "99"},
+				{Key: "X-Prefiller-Data-Parallel-Rank", Value: "98"},
+			},
+			wantHeaders: map[string]string{
+				routing.DataParallelRankHeader:        "",
+				routing.PrefillDataParallelRankHeader: "",
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -170,6 +183,7 @@ func TestGenerateHeaders_Sanitization(t *testing.T) {
 				metadata.OldObjectiveKey:        "old-sensitive-objective-id", // should be stripped
 				metadata.DestinationEndpointKey: "1.1.1.1:666",                // should be stripped
 				"content-length":                "99999",                      // should be stripped (re-added by logic)
+				routing.DataParallelRankHeader:  "4",
 			},
 		},
 	}
@@ -186,6 +200,71 @@ func TestGenerateHeaders_Sanitization(t *testing.T) {
 	assert.NotContains(t, gotHeaders, metadata.OldObjectiveKey)
 	assert.Equal(t, "1.2.3.4:8080", gotHeaders[metadata.DestinationEndpointKey])
 	assert.Equal(t, "123", gotHeaders["Content-Length"])
+	assert.Equal(t, "4", gotHeaders[routing.DataParallelRankHeader])
+}
+
+func TestGenerateRequestHeaderResponse_RankHeadersAreSetOrRemoved(t *testing.T) {
+	tests := []struct {
+		name        string
+		headers     map[string]string
+		wantSet     map[string]string
+		wantRemoved []string
+	}{
+		{
+			name: "logical decode and prefill are set",
+			headers: map[string]string{
+				routing.DataParallelRankHeader:        "2",
+				routing.PrefillDataParallelRankHeader: "5",
+			},
+			wantSet: map[string]string{
+				routing.DataParallelRankHeader:        "2",
+				routing.PrefillDataParallelRankHeader: "5",
+			},
+		},
+		{
+			name:        "physical endpoints remove spoofable rank headers",
+			headers:     map[string]string{},
+			wantSet:     map[string]string{},
+			wantRemoved: []string{routing.DataParallelRankHeader, routing.PrefillDataParallelRankHeader},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reqCtx := &RequestContext{
+				TargetEndpoint: "1.2.3.4:8080",
+				Request:        &Request{Headers: tc.headers},
+				Response:       &Response{},
+			}
+			resp := (&StreamingServer{}).generateRequestHeaderResponse(context.Background(), reqCtx)
+			mutation := resp.GetRequestHeaders().Response.HeaderMutation
+			gotSet := make(map[string]string)
+			for _, option := range mutation.SetHeaders {
+				if option.Header.Key == routing.DataParallelRankHeader ||
+					option.Header.Key == routing.PrefillDataParallelRankHeader {
+					gotSet[option.Header.Key] = string(option.Header.RawValue)
+				}
+			}
+			assert.Equal(t, tc.wantSet, gotSet)
+			assert.ElementsMatch(t, tc.wantRemoved, mutation.RemoveHeaders)
+			for key := range gotSet {
+				assert.NotContains(t, mutation.RemoveHeaders, key)
+			}
+
+			forwarded := map[string]string{
+				routing.DataParallelRankHeader:        "99",
+				routing.PrefillDataParallelRankHeader: "98",
+			}
+			for key, value := range gotSet {
+				forwarded[key] = value
+			}
+			for _, key := range mutation.RemoveHeaders {
+				delete(forwarded, key)
+			}
+			assert.Equal(t, tc.wantSet, forwarded,
+				"applying the ext-proc mutation must replace or remove spoofed client ranks")
+		})
+	}
 }
 
 func TestGenerateRequestHeaderResponse_MergeMetadata(t *testing.T) {
@@ -304,6 +383,7 @@ func TestFallbackToRandomEndpoint(t *testing.T) {
 		name            string
 		requestSize     int
 		wantBodyRespLen int
+		logicalSelector *int
 	}{
 		{
 			name:            "No body",
@@ -315,13 +395,24 @@ func TestFallbackToRandomEndpoint(t *testing.T) {
 			requestSize:     9,
 			wantBodyRespLen: 1,
 		},
+		{
+			name:            "Logical data parallel endpoint",
+			requestSize:     9,
+			wantBodyRespLen: 1,
+			logicalSelector: ptr.To(3),
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &StreamingServer{
-				director: &mockDirectorRequest{},
+			endpoint := &datalayer.EndpointMetadata{Address: "1.2.3.4", Port: "80"}
+			if tc.logicalSelector != nil {
+				endpoint.DataParallelTarget = &datalayer.DataParallelTarget{
+					GlobalRank: *tc.logicalSelector,
+					Selector:   *tc.logicalSelector,
+				}
 			}
+			server := &StreamingServer{director: &mockDirectorRequest{endpoint: endpoint}}
 			reqCtx := &RequestContext{
 				Request:  &Request{Headers: make(map[string]string), RawBody: []byte("test body")},
 				Response: &Response{Headers: make(map[string]string)},
@@ -329,6 +420,12 @@ func TestFallbackToRandomEndpoint(t *testing.T) {
 
 			err := server.fallbackToRandomEndpoint(context.Background(), reqCtx, tc.requestSize)
 			assert.NoError(t, err)
+			if tc.logicalSelector == nil {
+				assert.NotContains(t, reqCtx.Request.Headers, routing.DataParallelRankHeader)
+			} else {
+				assert.Equal(t, "3", reqCtx.Request.Headers[routing.DataParallelRankHeader])
+			}
+			assert.Equal(t, endpoint, reqCtx.TargetPod)
 
 			if tc.wantBodyRespLen > 0 {
 				assert.NotNil(t, reqCtx.reqBodyResp)
@@ -347,11 +444,12 @@ func TestFallbackToRandomEndpoint(t *testing.T) {
 
 type mockDirectorRequest struct {
 	Director
+	endpoint *datalayer.EndpointMetadata
 }
 
 func (m *mockDirectorRequest) GetRandomEndpoint() *datalayer.EndpointMetadata {
-	return &datalayer.EndpointMetadata{
-		Address: "1.2.3.4",
-		Port:    "80",
+	if m.endpoint != nil {
+		return m.endpoint
 	}
+	return &datalayer.EndpointMetadata{Address: "1.2.3.4", Port: "80"}
 }

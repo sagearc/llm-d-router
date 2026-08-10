@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	errcommon "github.com/llm-d/llm-d-router/pkg/common/error"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
 	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 )
 
@@ -46,6 +47,8 @@ func TestIsSystemOwnedHeaderIncludesAliases(t *testing.T) {
 		metadata.DestinationEndpointKey,
 		metadata.DestinationEndpointServedKey,
 		errcommon.RequestDroppedReasonHeaderKey,
+		routing.DataParallelRankHeader,
+		routing.PrefillDataParallelRankHeader,
 		"Content-Length",
 	}
 

@@ -52,6 +52,8 @@ type GenericEvent interface {
 type EventBatch struct {
 	Timestamp float64
 	Events    []GenericEvent
+	// DataParallelRank identifies the cache shard that published the batch when present.
+	DataParallelRank *int
 }
 
 // RawMessage holds the raw transport-level data from a received pub/sub message.
@@ -65,6 +67,8 @@ type RawMessage struct {
 	Payload []byte
 	// SourceEndpoint is the serving endpoint associated with the subscriber.
 	SourceEndpoint string
+	// ExpectedDataParallelRank is the rank bound to the subscriber.
+	ExpectedDataParallelRank *int
 	// reset clears the message's pod before later messages on the same queue.
 	reset bool
 }

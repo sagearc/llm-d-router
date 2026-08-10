@@ -17,7 +17,6 @@ limitations under the License.
 package preciseprefixcache
 
 import (
-	"fmt"
 	"slices"
 
 	"github.com/llm-d/llm-d-router/pkg/kvcache/kvblock"
@@ -34,7 +33,7 @@ func extractEndpointSet(endpoints []scheduling.Endpoint) sets.Set[string] {
 	endpointSet := sets.New[string]()
 	for _, ep := range endpoints {
 		if m := ep.GetMetadata(); m != nil {
-			endpointSet.Insert(fmt.Sprintf("%s:%s", m.Address, m.Port))
+			endpointSet.Insert(m.GetCacheIdentity())
 		}
 	}
 	return endpointSet

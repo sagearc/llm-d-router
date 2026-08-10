@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	errcommon "github.com/llm-d/llm-d-router/pkg/common/error"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
 	"github.com/llm-d/llm-d-router/pkg/epp/metadata"
 )
 
@@ -48,6 +49,8 @@ var (
 			metadata.DestinationEndpointServedKey,
 		),
 		errcommon.RequestDroppedReasonHeaderKey,
+		routing.DataParallelRankHeader,
+		routing.PrefillDataParallelRankHeader,
 	)
 
 	// ProtocolHeaders are managed by the proxy layer (Envoy/EPP).

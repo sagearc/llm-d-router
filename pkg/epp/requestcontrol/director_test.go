@@ -32,6 +32,9 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,6 +49,7 @@ import (
 	errcommon "github.com/llm-d/llm-d-router/pkg/common/error"
 	logutil "github.com/llm-d/llm-d-router/pkg/common/observability/logging"
 	reqcommon "github.com/llm-d/llm-d-router/pkg/common/request"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
 	"github.com/llm-d/llm-d-router/pkg/epp/datalayer"
 	"github.com/llm-d/llm-d-router/pkg/epp/datastore"
 	fwkdl "github.com/llm-d/llm-d-router/pkg/epp/framework/interface/datalayer"
@@ -2216,4 +2220,78 @@ func TestRunPreRequestPlugins_AggregatesErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), `PreRequest "third/mock" failed`)
 	assert.Equal(t, []string{"first", "second", "third"}, invoked,
 		"every plugin must run; a failure in one must not short-circuit the rest")
+}
+
+func TestSetDataParallelRankHeader(t *testing.T) {
+	request := &fwksched.InferenceRequest{Headers: map[string]string{
+		routing.DataParallelRankHeader: "spoofed",
+	}}
+	setDataParallelRankHeader(request, &fwkdl.EndpointMetadata{
+		DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 7, Selector: 3},
+	})
+	assert.Equal(t, "3", request.Headers[routing.DataParallelRankHeader])
+
+	setDataParallelRankHeader(request, &fwkdl.EndpointMetadata{})
+	assert.NotContains(t, request.Headers, routing.DataParallelRankHeader)
+}
+
+func TestValidateDataParallelTargetCandidates(t *testing.T) {
+	physical := func() *fwkdl.EndpointMetadata { return &fwkdl.EndpointMetadata{} }
+	logical := func(globalRank, selector int) *fwkdl.EndpointMetadata {
+		return &fwkdl.EndpointMetadata{
+			DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: globalRank, Selector: selector},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		targets []*fwkdl.EndpointMetadata
+		wantErr string
+	}{
+		{name: "one physical", targets: []*fwkdl.EndpointMetadata{physical()}},
+		{name: "multiple physical", targets: []*fwkdl.EndpointMetadata{physical(), physical()}},
+		{name: "one logical", targets: []*fwkdl.EndpointMetadata{logical(2, 2)}},
+		{name: "multiple frontends with one selector", targets: []*fwkdl.EndpointMetadata{logical(2, 2), logical(7, 2)}},
+		{
+			name:    "mixed logical and physical",
+			targets: []*fwkdl.EndpointMetadata{logical(2, 2), physical()},
+			wantErr: "mix data-parallel selector and physical routing contracts",
+		},
+		{
+			name:    "different selectors",
+			targets: []*fwkdl.EndpointMetadata{logical(2, 2), logical(3, 3)},
+			wantErr: "different data-parallel selectors 2 and 3",
+		},
+		{name: "empty", wantErr: "must contain at least one target endpoint"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateDataParallelTargetCandidates(test.targets)
+			if test.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, test.wantErr)
+		})
+	}
+}
+
+func TestRecordDataParallelTarget(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	ctx, span := provider.Tracer("test").Start(context.Background(), "request")
+	recordDataParallelTarget(ctx, &fwkdl.EndpointMetadata{
+		DataParallelTarget: &fwkdl.DataParallelTarget{GlobalRank: 7, Selector: 3},
+	})
+	span.End()
+
+	ended := recorder.Ended()
+	require.Len(t, ended, 1)
+	attributes := make(map[attribute.Key]attribute.Value)
+	for _, attr := range ended[0].Attributes() {
+		attributes[attr.Key] = attr.Value
+	}
+	assert.Equal(t, int64(7), attributes["llm_d.epp.target.dp_global_rank"].AsInt64())
+	assert.Equal(t, int64(3), attributes["llm_d.epp.target.dp_selector"].AsInt64())
 }

@@ -25,10 +25,14 @@ import (
 // Mapping holds specifications for the well-known metrics defined
 // in the Model Server Protocol.
 type Mapping struct {
-	TotalQueuedRequests  *Spec
-	TotalRunningRequests *Spec
-	KVCacheUtilization   *Spec
-	LoraRequestInfo      *LoRASpec
+	// DataParallelRankLabel identifies rank-local series for logical endpoints.
+	DataParallelRankLabel string
+	TotalQueuedRequests   *Spec
+	TotalRunningRequests  *Spec
+	KVCacheUtilization    *Spec
+	MaxTokenCapacity      *Spec
+	Timestamp             *Spec
+	LoraRequestInfo       *LoRASpec
 	// CacheInfo is used for info-style gauge metrics where block_size and
 	// num_gpu_blocks are exposed as label values (e.g. vLLM, trtllm-serve, SGLang).
 	CacheInfo *Spec
@@ -47,16 +51,19 @@ type Mapping struct {
 
 // MappingConfig holds configuration used to build a Mapping.
 type MappingConfig struct {
-	Queue               string
-	Running             string
-	KVUsage             string
-	Lora                string
-	CacheInfo           string
-	CacheBlockSizeLabel string
-	CacheNumBlocksLabel string
-	CacheBlockSize      string
-	CacheNumBlocks      string
-	CustomMetrics       []CustomMetric
+	DataParallelRankLabel string
+	Queue                 string
+	Running               string
+	KVUsage               string
+	MaxTokenCapacity      string
+	Timestamp             string
+	Lora                  string
+	CacheInfo             string
+	CacheBlockSizeLabel   string
+	CacheNumBlocksLabel   string
+	CacheBlockSize        string
+	CacheNumBlocks        string
+	CustomMetrics         []CustomMetric
 }
 
 type CustomMetric struct {
@@ -75,11 +82,13 @@ func (m *Mapping) specs() []namedSpec {
 	if m.LoraRequestInfo != nil {
 		loraSpec = m.LoraRequestInfo.Spec
 	}
-	specs := make([]namedSpec, 0, 5+len(m.CustomMetrics))
+	specs := make([]namedSpec, 0, 7+len(m.CustomMetrics))
 	specs = append(specs,
 		namedSpec{"queue", m.TotalQueuedRequests, m.TotalQueuedRequests != nil},
 		namedSpec{"running", m.TotalRunningRequests, m.TotalRunningRequests != nil},
 		namedSpec{"kv", m.KVCacheUtilization, m.KVCacheUtilization != nil},
+		namedSpec{"maxTokenCapacity", m.MaxTokenCapacity, m.MaxTokenCapacity != nil},
+		namedSpec{"timestamp", m.Timestamp, m.Timestamp != nil},
 		namedSpec{"lora", loraSpec, m.LoraRequestInfo != nil},
 		namedSpec{"cacheInfo", m.CacheInfo, m.CacheInfo != nil},
 	)
@@ -145,6 +154,14 @@ func NewMappingFromConfig(cfg MappingConfig) (*Mapping, error) {
 	if err != nil {
 		errs = append(errs, err)
 	}
+	maxTokenCapacitySpec, err := parseStringToSpec(cfg.MaxTokenCapacity)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	timestampSpec, err := parseStringToSpec(cfg.Timestamp)
+	if err != nil {
+		errs = append(errs, err)
+	}
 	loraSpec, err := parseStringToLoRASpec(cfg.Lora)
 	if err != nil {
 		errs = append(errs, err)
@@ -168,16 +185,19 @@ func NewMappingFromConfig(cfg MappingConfig) (*Mapping, error) {
 		return nil, errors.Join(errs...)
 	}
 	return &Mapping{
-		TotalQueuedRequests:  queueSpec,
-		TotalRunningRequests: runningSpec,
-		KVCacheUtilization:   kvusageSpec,
-		LoraRequestInfo:      loraSpec,
-		CacheInfo:            cacheInfoSpec,
-		CacheBlockSizeLabel:  cfg.CacheBlockSizeLabel,
-		CacheNumBlocksLabel:  cfg.CacheNumBlocksLabel,
-		CacheBlockSize:       cacheBlockSizeSpec,
-		CacheNumBlocks:       cacheNumBlocksSpec,
-		CustomMetrics:        customMetrics,
+		DataParallelRankLabel: cfg.DataParallelRankLabel,
+		TotalQueuedRequests:   queueSpec,
+		TotalRunningRequests:  runningSpec,
+		KVCacheUtilization:    kvusageSpec,
+		MaxTokenCapacity:      maxTokenCapacitySpec,
+		Timestamp:             timestampSpec,
+		LoraRequestInfo:       loraSpec,
+		CacheInfo:             cacheInfoSpec,
+		CacheBlockSizeLabel:   cfg.CacheBlockSizeLabel,
+		CacheNumBlocksLabel:   cfg.CacheNumBlocksLabel,
+		CacheBlockSize:        cacheBlockSizeSpec,
+		CacheNumBlocks:        cacheNumBlocksSpec,
+		CustomMetrics:         customMetrics,
 	}, nil
 }
 

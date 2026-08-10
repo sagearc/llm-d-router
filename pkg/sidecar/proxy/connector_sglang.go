@@ -32,11 +32,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/llm-d/llm-d-router/pkg/common/observability/tracing"
+	"github.com/llm-d/llm-d-router/pkg/common/routing"
 )
 
 var (
 	sglangBootstrapPort int
 )
+
+const sglangDisaggPrefillDataParallelRankHeader = "x-override-disagg-prefill-dp-rank"
 
 func init() {
 	// Default SGLang bootstrap port
@@ -100,6 +103,14 @@ func (s *Server) handleSGLangConcurrentRequests(w http.ResponseWriter, r *http.R
 	// if the main HTTP handler (which serves decodeReq) finishes first.
 	prefillReq := cloneRequestWithBody(context.WithoutCancel(r.Context()), r, body)
 	decodeReq := cloneRequestWithBody(r.Context(), r, body)
+	if err := pinSGLangDataParallelRanks(prefillReq, decodeReq); err != nil {
+		prefillSpan.SetStatus(codes.Error, "invalid data parallel rank")
+		prefillSpan.End()
+		if err := errorJSONInvalid(err, w); err != nil {
+			s.logger.Error(err, "failed to send error response to client")
+		}
+		return
+	}
 
 	prefillHandler, err := s.prefillerProxyHandler(prefillHost)
 	if err != nil {
@@ -174,6 +185,28 @@ func (s *Server) handleSGLangConcurrentRequests(w http.ResponseWriter, r *http.R
 			attribute.Bool("llm_d.pd_proxy.concurrent_pd", true),
 		)
 	}
+}
+
+func pinSGLangDataParallelRanks(prefillReq, decodeReq *http.Request) error {
+	prefillSelector := prefillReq.Header.Get(routing.PrefillDataParallelRankHeader)
+	prefillReq.Header.Del(routing.PrefillDataParallelRankHeader)
+	decodeReq.Header.Del(routing.PrefillDataParallelRankHeader)
+	prefillReq.Header.Del(sglangDisaggPrefillDataParallelRankHeader)
+	decodeReq.Header.Del(sglangDisaggPrefillDataParallelRankHeader)
+
+	if prefillSelector == "" {
+		prefillReq.Header.Del(routing.DataParallelRankHeader)
+		return nil
+	}
+	selector, err := strconv.Atoi(prefillSelector)
+	if err != nil || selector < 0 {
+		return fmt.Errorf("invalid %s value %q", routing.PrefillDataParallelRankHeader, prefillSelector)
+	}
+	selectorValue := strconv.Itoa(selector)
+	prefillReq.Header.Set(routing.DataParallelRankHeader, selectorValue)
+	prefillReq.Header.Set(sglangDisaggPrefillDataParallelRankHeader, selectorValue)
+	decodeReq.Header.Set(sglangDisaggPrefillDataParallelRankHeader, selectorValue)
+	return nil
 }
 
 func (s *Server) addSGLangBootstrapInfo(requestData map[string]interface{}, prefillHostPort string, roomID int64) map[string]interface{} {

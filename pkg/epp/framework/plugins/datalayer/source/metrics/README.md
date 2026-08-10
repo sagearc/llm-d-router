@@ -23,6 +23,7 @@ The plugin config supports:
 
 -   `scheme` (default "http"): The protocol scheme to use for metrics retrieval.
 -   `path` (default "/metrics"): The URL path to use for metrics retrieval.
+-   `query` (map, optional): URL query parameters added to each scrape request.
 -   `insecureSkipVerify` (default true): Whether to skip TLS certificate verification when using the "https" scheme.
 -   `caCertPath`: PEM CA bundle to verify the target's server cert.
 -   `clientCertPath` / `clientKeyPath`: client certificate for mTLS. Set both together.
@@ -36,7 +37,10 @@ The plugin config supports:
 type: metrics-data-source
 parameters:
   scheme: "http"
-  path: "/metrics"
+  path: "/v1/loads"
+  query:
+    format: "prometheus"
+    include: "core"
   insecureSkipVerify: true
   interval: "1s"
 ```

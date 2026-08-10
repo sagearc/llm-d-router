@@ -17,6 +17,7 @@ package kvevents
 import (
 	"context"
 	"encoding/binary"
+	"math"
 	"time"
 
 	zmq4 "github.com/go-zeromq/zmq4"
@@ -35,19 +36,21 @@ const (
 
 // zmqSubscriber connects to a ZMQ publisher and forwards messages to a pool.
 type zmqSubscriber struct {
-	pool           *Pool
-	podIdentifier  string
-	sourceEndpoint string
-	endpoint       string
-	replayEndpoint string
-	remote         bool
-	topicFilter    string
+	pool                     *Pool
+	podIdentifier            string
+	sourceEndpoint           string
+	endpoint                 string
+	replayEndpoint           string
+	remote                   bool
+	topicFilter              string
+	expectedDataParallelRank *int
 
 	// Replay state persists across reconnections within subscriber lifetime.
 	lastSeq           uint64
 	hasLastSeq        bool
 	lastLiveSeq       uint64
 	hasLastLiveSeq    bool
+	lastTopic         string
 	lastReplayFailure time.Time
 }
 
@@ -55,16 +58,18 @@ type zmqSubscriber struct {
 func newZMQSubscriber(
 	pool *Pool,
 	podIdentifier, sourceEndpoint, endpoint, replayEndpoint, topicFilter string,
+	expectedDataParallelRank *int,
 	remote bool,
 ) *zmqSubscriber {
 	return &zmqSubscriber{
-		pool:           pool,
-		podIdentifier:  podIdentifier,
-		sourceEndpoint: sourceEndpoint,
-		endpoint:       endpoint,
-		replayEndpoint: replayEndpoint,
-		remote:         remote,
-		topicFilter:    topicFilter,
+		pool:                     pool,
+		podIdentifier:            podIdentifier,
+		sourceEndpoint:           sourceEndpoint,
+		endpoint:                 endpoint,
+		replayEndpoint:           replayEndpoint,
+		remote:                   remote,
+		topicFilter:              topicFilter,
+		expectedDataParallelRank: expectedDataParallelRank,
 	}
 }
 
@@ -166,6 +171,7 @@ func (z *zmqSubscriber) runSubscriber(ctx context.Context) {
 				"frameCount", len(msg.Frames), "endpoint", z.endpoint)
 			continue
 		}
+		z.lastTopic = topic
 
 		if z.replayEndpoint == "" {
 			z.addTask(topic, seq, payload)
@@ -239,10 +245,11 @@ func (z *zmqSubscriber) runSubscriber(ctx context.Context) {
 
 func (z *zmqSubscriber) addTask(topic string, seq uint64, payload []byte) {
 	z.pool.AddTask(&RawMessage{
-		Topic:          topic,
-		Sequence:       seq,
-		Payload:        payload,
-		SourceEndpoint: z.sourceEndpoint,
+		Topic:                    topic,
+		Sequence:                 seq,
+		Payload:                  payload,
+		SourceEndpoint:           z.sourceEndpoint,
+		ExpectedDataParallelRank: z.expectedDataParallelRank,
 	})
 }
 
@@ -297,16 +304,24 @@ func (z *zmqSubscriber) requestReplay(ctx context.Context, startSeq uint64) bool
 		if len(frames) > 0 && len(frames[0]) == 0 {
 			frames = frames[1:]
 		}
-		if len(frames) == 3 && len(frames[2]) == 0 {
-			break
+		// SGLang replay responses omit the topic and contain [sequence,
+		// payload]. A live event is needed once per subscriber lifetime to
+		// recover the full topic, including the model name used for block keys.
+		if len(frames) == 2 && z.lastTopic == "" {
+			logger.Info("Replay response omits topic, deferring until a live event supplies it",
+				"replayEndpoint", z.replayEndpoint)
+			return false
 		}
 
-		topic, seq, payload, ok := parseEventFrame(frames)
+		topic, seq, payload, end, ok := parseReplayFrame(frames, z.lastTopic)
 		if !ok {
 			z.lastReplayFailure = time.Now()
 			logger.Error(nil, "Malformed replay frame",
 				"frameCount", len(frames), "replayed", replayed)
 			return false
+		}
+		if end {
+			break
 		}
 		if z.hasLastSeq && seq <= z.lastSeq {
 			continue
@@ -322,4 +337,34 @@ func (z *zmqSubscriber) requestReplay(ctx context.Context, startSeq uint64) bool
 	logger.Info("Replay complete", "replayed", replayed,
 		"startSeq", startSeq, "replayEndpoint", z.replayEndpoint)
 	return true
+}
+
+// parseReplayFrame accepts both vLLM's [topic, sequence, payload] replay
+// frames and SGLang's [sequence, payload] frames. SGLang's topic must be
+// learned from a live event because its replay protocol does not carry it.
+//
+//nolint:gocritic // unnamedResult conflicts with nonamedreturns
+func parseReplayFrame(frames [][]byte, fallbackTopic string) (string, uint64, []byte, bool, bool) {
+	var topic string
+	var seqFrame, payload []byte
+	switch len(frames) {
+	case 3:
+		topic = string(frames[0])
+		seqFrame = frames[1]
+		payload = frames[2]
+	case 2:
+		if fallbackTopic == "" {
+			return "", 0, nil, false, false
+		}
+		topic = fallbackTopic
+		seqFrame = frames[0]
+		payload = frames[1]
+	default:
+		return "", 0, nil, false, false
+	}
+	if len(seqFrame) < 8 {
+		return "", 0, nil, false, false
+	}
+	seq := binary.BigEndian.Uint64(seqFrame)
+	return topic, seq, payload, seq == math.MaxUint64 && len(payload) == 0, true
 }

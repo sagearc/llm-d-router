@@ -84,7 +84,7 @@ type tokenizerPluginConfig struct {
 	// Estimate selects the tokenizer-free byte-packing backend; mutually
 	// exclusive with 'vllm' and needs no 'modelName'.
 	Estimate *estimateConfig `json:"estimate,omitempty"`
-	// ModelName is used for startup probes, native gRPC text, and legacy Messages.
+	// ModelName is used for startup probes, native Generate text, and legacy rendering.
 	// Native HTTP rendering keeps the effective model, including aliases and adapters.
 	ModelName string `json:"modelName"`
 }

@@ -100,6 +100,45 @@ func TestSuppliedTokensReachScheduling(t *testing.T) {
 	}
 }
 
+func TestGenerateTextRenderingPreservesPayload(t *testing.T) {
+	const raw = ` {"text":"hello world","sampling_params":{"max_new_tokens":8,"seed":9007199254740993},"extension":{"z":1,"a":2}} `
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				require.Equal(t, "/v1/completions/render", r.URL.Path)
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				require.JSONEq(t, `{"model":"serving-model","prompt":"hello world","add_special_tokens":true}`, string(body))
+				w.WriteHeader(status)
+				if status == http.StatusOK {
+					_, _ = io.WriteString(w, `[{"token_ids":[1,2,3]}]`)
+				}
+			}))
+			defer srv.Close()
+			parsed, err := sglanghttp.NewSGLangHTTPParser().ParseRequest(t.Context(), []byte(raw), map[string]string{":path": "/generate"})
+			require.NoError(t, err)
+			parsed.Body.RawBody = []byte(raw)
+			renderer := newHTTPRenderer(t, srv)
+			p := newTestPlugin(renderer)
+			p.backend = renderBackend{tk: renderer, modelName: "serving-model"}
+			req := &scheduling.InferenceRequest{Body: parsed.Body}
+			err = p.Produce(t.Context(), req, nil)
+			if status == http.StatusOK {
+				require.NoError(t, err)
+				require.Equal(t, []uint32{1, 2, 3}, req.Body.TokenizedRequest.Prompts[0].TokenIDs)
+			} else {
+				require.Error(t, err)
+				require.Nil(t, req.Body.TokenizedRequest)
+			}
+			require.Equal(t, 1, calls)
+			require.False(t, req.Body.Mutated)
+			require.Equal(t, fwkrh.RawPayload(raw), req.Body.WirePayload())
+		})
+	}
+}
+
 func TestCompletionTokenBatchesUseRenderedTokens(t *testing.T) {
 	const raw = ` {"model":"m","prompt":[[1,2,3],[4,5,6]],"truncate_prompt_tokens":2,"cache_salt":"tenant-a"} `
 	parsed, err := openai.NewOpenAIParser().ParseRequest(context.Background(), []byte(raw), map[string]string{":path": "/v1/completions"})

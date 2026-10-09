@@ -115,8 +115,16 @@ token production; metadata added afterward must not affect tokenization.
 
 Completions requests with token arrays go through vLLM, which owns truncation
 and other input preprocessing. These requests require a render round trip and
-an available renderer. Native Generate requests carry final tokens and bypass
-rendering. Direct requests to the three `/render` endpoints retain model
+an available renderer. Native Generate requests with final tokens bypass
+rendering. SGLang `/generate` text prompts use Completions rendering with
+`modelName` and special tokens enabled, leaving the inference body unchanged.
+For model-qualified KV events, configure a generic `InferenceModelRewrite`
+rule targeting the pool's serving model; its name must match the event topic's
+model. This resolves the scheduling identity without adding a model field to
+the native request. The renderer must use the serving engine's tokenizer and
+special-token configuration.
+
+Direct requests to the three `/render` endpoints retain model
 routing and pass through without local token
 production or response parsing.
 

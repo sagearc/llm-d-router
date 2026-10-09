@@ -64,6 +64,7 @@ import (
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requestcontrol/requestheader/agentidentity"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/anthropic"
 	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/openai"
+	"github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/requesthandling/parsers/sglanghttp"
 	sessionaffinityfilter "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/filter/sessionaffinity"
 	sessionaffinityscorer "github.com/llm-d/llm-d-router/pkg/epp/framework/plugins/scheduling/scorer/sessionaffinity"
 	"github.com/llm-d/llm-d-router/pkg/epp/handlers"
@@ -1461,6 +1462,36 @@ func TestGetRandomEndpoint(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDirector_NativeModelResolutionPreservesPayload(t *testing.T) {
+	const raw = ` {"input_ids":[1,2,3],"sampling_params":{"seed":9007199254740993},"model":"opaque-extension"} `
+	for _, target := range []string{"", "serving-model"} {
+		t.Run("target="+target, func(t *testing.T) {
+			ds := datastore.NewDatastore(t.Context(), nil)
+			if target != "" {
+				ds.ModelRewriteSet(&v1alpha2.InferenceModelRewrite{
+					Spec: v1alpha2.InferenceModelRewriteSpec{Rules: []v1alpha2.InferenceModelRewriteRule{{
+						Targets: []v1alpha2.TargetModel{{ModelRewrite: target}},
+					}}},
+				})
+			}
+			parser := sglanghttp.NewSGLangHTTPParser()
+			parsed, err := parser.ParseRequest(t.Context(), []byte(raw), map[string]string{":path": "/generate"})
+			require.NoError(t, err)
+			reqCtx := &handlers.RequestContext{
+				Parser: parser, IncomingModelName: parsed.Body.Model,
+				Request: &handlers.Request{RawBody: []byte(raw)},
+			}
+			director := &Director{datastore: ds}
+			require.NoError(t, director.modelRewriteIfNeeded(t.Context(), reqCtx, parsed.Body))
+			require.Equal(t, target, reqCtx.TargetModelName)
+			require.Empty(t, parsed.Body.Model)
+			require.False(t, parsed.Body.Mutated)
+			require.NoError(t, director.repackage(t.Context(), reqCtx, parsed.Body))
+			require.Equal(t, raw, string(reqCtx.Request.RawBody))
+		})
 	}
 }
 

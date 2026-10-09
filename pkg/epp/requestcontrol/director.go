@@ -341,11 +341,15 @@ func (d *Director) HandleRequest(ctx context.Context, reqCtx *handlers.RequestCo
 	return reqCtx, nil
 }
 
-// modelRewriteIfNeeded rewrites the model name in the payload when the resolved target
-// differs from the model the parser read out of the body, marking the body Mutated so
-// repackage can skip re-marshaling when nothing changed.
+// modelRewriteIfNeeded resolves the routing model and rewrites the payload when
+// the parser supports it. Protocols without a model field retain their payload.
 func (d *Director) modelRewriteIfNeeded(ctx context.Context, reqCtx *handlers.RequestContext, inferenceRequestBody *fwkrh.InferenceRequestBody) error {
 	logger := log.FromContext(ctx)
+	if reqCtx.TargetModelName == "" {
+		reqCtx.TargetModelName = reqCtx.IncomingModelName
+	}
+	d.applyWeightedModelRewrite(ctx, reqCtx)
+
 	rewriter, ok := reqCtx.Parser.(fwkrh.ModelNameRewriter)
 	if !ok {
 		logger.Info("Warning: parser does not implement ModelNameRewriter, skipping model rewrite")
@@ -356,10 +360,6 @@ func (d *Director) modelRewriteIfNeeded(ctx context.Context, reqCtx *handlers.Re
 		logger.Info("Warning: payload does not implement MarshalablePayload, skipping model rewrite")
 		return nil
 	}
-	if reqCtx.TargetModelName == "" {
-		reqCtx.TargetModelName = reqCtx.IncomingModelName
-	}
-	d.applyWeightedModelRewrite(ctx, reqCtx)
 	if reqCtx.TargetModelName == "" {
 		return errcommon.Error{Code: errcommon.BadRequest, Msg: "model not found in request body"}
 	}
